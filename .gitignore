@@ -12,5 +12,8 @@ CMakeSettings.json
 *.onnx
 *.cache
 
+# Large media files
+*.mp4
+
 # vcpkg installed
 vcpkg_installed/
