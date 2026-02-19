@@ -1,0 +1,16 @@
+# Build output
+build*/
+out/
+
+# Visual Studio
+.vs/
+*.user
+CMakeSettings.json
+
+# Runtime data
+*.engine
+*.onnx
+*.cache
+
+# vcpkg installed
+vcpkg_installed/

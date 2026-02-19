@@ -1,0 +1,23 @@
+{
+  "name": "bytron",
+  "version": "0.1.0",
+  "description": "Pipelined CUDA + TensorRT YOLO26 inference engine",
+  "dependencies": [
+    {
+      "name": "opencv4",
+      "default-features": false,
+      "features": [
+        "dshow",
+        "ffmpeg",
+        "highgui",
+        "jpeg",
+        "png",
+        "win32ui"
+      ]
+    },
+    "spdlog",
+    "nlohmann-json",
+    "gtest"
+  ],
+  "builtin-baseline": "dbc1677d47a2dd29f8a1e0eab80b5b43116e0165"
+}
