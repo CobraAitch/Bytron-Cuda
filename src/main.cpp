@@ -32,6 +32,7 @@ Captures the desktop via DXGI Desktop Duplication (primary monitor by default).
 
 Options:
   -m, --onnx <path>       Path to YOLO26 ONNX model
+  -g, --gpu <index>       CUDA device index (default: 0)
   -d, --monitor <index>   Monitor index for desktop capture (default: 0)
   -p, --precision <fp16|int8>  Inference precision (default: fp16)
   -c, --config <path>     JSON config file
@@ -63,6 +64,7 @@ int main(int argc, char** argv) {
         }
 
         spdlog::info("Bytron starting...");
+        spdlog::info("GPU:       {}", cfg.gpu_device);
         spdlog::info("Monitor:   {}", cfg.monitor_index);
         spdlog::info("Model:     {}", cfg.onnx_path.string());
         spdlog::info("Precision: {}", cfg.precision == bytron::Precision::FP16 ? "FP16" : "INT8");

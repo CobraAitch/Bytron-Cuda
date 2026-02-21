@@ -23,13 +23,15 @@ namespace bytron {
      */
     class Postprocessor {
     public:
-        Postprocessor(float conf_threshold, int max_detections) noexcept;
+        Postprocessor(float conf_threshold, int max_detections,
+                      int stride = 6) noexcept;
 
         void process(std::span<const float> output_host, FrameContext& ctx);
 
     private:
         float conf_threshold_;
         int   max_detections_;
+        int   stride_;  ///< Values per detection in model output (>= 6).
     };
 
 }

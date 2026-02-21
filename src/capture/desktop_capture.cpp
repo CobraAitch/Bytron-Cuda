@@ -160,7 +160,12 @@ namespace bytron {
         if (FAILED(hr)) return AcquireResult::kError;
 
         // Map D3D11 shared texture into CUDA, copy BGRA pixels to dst, then unmap.
+        // RAII guard ensures unmap even if cudaMemcpy2DFromArrayAsync fails.
         CUDA_CHECK(cudaGraphicsMapResources(1, &cuda_resource_, stream));
+        struct MapGuard {
+            cudaGraphicsResource_t res; cudaStream_t s;
+            ~MapGuard() { cudaGraphicsUnmapResources(1, &res, s); }
+        } map_guard{cuda_resource_, stream};
 
         cudaArray_t cuda_array = nullptr;
         CUDA_CHECK(cudaGraphicsSubResourceGetMappedArray(&cuda_array, cuda_resource_, 0, 0));
@@ -172,8 +177,6 @@ namespace bytron {
             std::size_t(width_) * 4,
             std::size_t(height_),
             cudaMemcpyDeviceToDevice, stream));
-
-        CUDA_CHECK(cudaGraphicsUnmapResources(1, &cuda_resource_, stream));
 
         return AcquireResult::kNewFrame;
     }

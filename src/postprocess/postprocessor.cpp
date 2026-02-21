@@ -9,9 +9,11 @@
 
 namespace bytron {
 
-    Postprocessor::Postprocessor(float conf_threshold, int max_detections) noexcept
+    Postprocessor::Postprocessor(float conf_threshold, int max_detections,
+                                 int stride) noexcept
         : conf_threshold_(conf_threshold)
-        , max_detections_(max_detections) {}
+        , max_detections_(max_detections)
+        , stride_(stride) {}
 
     void Postprocessor::process(std::span<const float> output_host, FrameContext& ctx) {
         ctx.detections.clear();
@@ -20,7 +22,7 @@ namespace bytron {
         auto h = static_cast<float>(ctx.src_height);
 
         for (int i = 0; i < max_detections_; ++i) {
-            const float* det = output_host.data() + i * 6;
+            const float* det = output_host.data() + i * stride_;
             if (det[4] < conf_threshold_) continue;
 
             // Inverse letterbox: subtract padding, divide by scale, clamp to frame bounds.

@@ -1,0 +1,59 @@
+---
+Language: Cpp
+BasedOnStyle: Microsoft
+
+# Indentation
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+NamespaceIndentation: All
+IndentCaseLabels: true
+IndentPPDirectives: None
+AccessModifierOffset: -4
+
+# Braces
+BreakBeforeBraces: Attach
+Cpp11BracedListStyle: true
+
+# Alignment
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: Consecutive
+AlignConsecutiveDeclarations: false
+AlignOperands: Align
+AlignTrailingComments: true
+
+# Line breaks
+ColumnLimit: 120
+AllowShortBlocksOnASingleLine: Empty
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortLambdasOnASingleLine: All
+AlwaysBreakTemplateDeclarations: Yes
+BinPackArguments: true
+BinPackParameters: true
+BreakConstructorInitializers: BeforeComma
+
+# Spacing
+SpaceAfterCStyleCast: false
+SpaceAfterTemplateKeyword: false
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeParens: ControlStatements
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 2
+SpacesInAngles: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# Includes
+IncludeBlocks: Preserve
+SortIncludes: false
+
+# Misc
+PointerAlignment: Left
+DerivePointerAlignment: false
+FixNamespaceComments: true
+ReflowComments: false
+Standard: c++20
+...

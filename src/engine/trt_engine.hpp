@@ -63,6 +63,7 @@ namespace bytron {
         [[nodiscard]] int            model_width()    const;           ///< input_dims().d[3]
         [[nodiscard]] int            model_height()   const;           ///< input_dims().d[2]
         [[nodiscard]] int            max_detections() const;           ///< output_dims().d[1]
+        [[nodiscard]] int            output_stride()  const;           ///< output_dims().d[2] (values per detection, e.g. 6)
 
     private:
         void build_from_onnx(const BuildConfig& config);

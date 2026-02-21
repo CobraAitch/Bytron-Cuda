@@ -41,14 +41,15 @@ namespace bytron {
             engine_->model_width(), engine_->model_height());
 
         postprocessor_ = std::make_unique<Postprocessor>(
-            cfg_.confidence_threshold, engine_->max_detections());
+            cfg_.confidence_threshold, engine_->max_detections(),
+            engine_->output_stride());
 
         slots_.resize(num_slots_);
         for (int i = 0; i < num_slots_; ++i) {
             slots_[i].index = i;
             slots_[i].allocate(cfg_.max_frame_width, cfg_.max_frame_height,
                                engine_->model_width(), engine_->model_height(),
-                               engine_->max_detections());
+                               engine_->max_detections(), engine_->output_stride());
             slots_[i].trt_context = engine_->create_context();
         }
 
@@ -96,7 +97,7 @@ namespace bytron {
     }
 
     void Pipeline::capture_loop(std::stop_token stoken) {
-        CUDA_CHECK(cudaSetDevice(0));
+        CUDA_CHECK(cudaSetDevice(cfg_.gpu_device));
         spdlog::debug("Capture thread started");
 
         int write_idx = 0;
@@ -155,7 +156,7 @@ namespace bytron {
     }
 
     void Pipeline::inference_loop(std::stop_token stoken, OutputSink& sink) {
-        CUDA_CHECK(cudaSetDevice(0));
+        CUDA_CHECK(cudaSetDevice(cfg_.gpu_device));
         spdlog::debug("Inference thread started");
 
         Timer fps_timer;
@@ -255,7 +256,7 @@ namespace bytron {
                 if (!ctx->enqueueV3(stream))
                     throw std::runtime_error("TRT enqueueV3 failed on slot " + std::to_string(idx));
 
-                auto output_bytes = std::size_t(engine_->max_detections()) * 6 * sizeof(float);
+                auto output_bytes = std::size_t(engine_->max_detections()) * engine_->output_stride() * sizeof(float);
                 slot.output_buffer.copy_to_host_async(slot.output_pinned.ptr(), output_bytes, stream);
 
                 // Warm-up: run one eager pass before graph capture to let TRT
@@ -327,7 +328,7 @@ namespace bytron {
                                      + std::to_string(slot.index));
         }
 
-        auto output_bytes = std::size_t(engine_->max_detections()) * 6 * sizeof(float);
+        auto output_bytes = std::size_t(engine_->max_detections()) * engine_->output_stride() * sizeof(float);
         CUDA_CHECK(cudaMemcpyAsync(slot.output_pinned.ptr(), slot.output_buffer.ptr(),
                                     output_bytes, cudaMemcpyDeviceToHost, stream));
 
@@ -337,7 +338,7 @@ namespace bytron {
 
     void Pipeline::harvest_and_deliver(PipelineSlot& slot, OutputSink& sink) {
         postprocessor_->process(
-            {slot.output_pinned.as<float>(), static_cast<std::size_t>(engine_->max_detections()) * 6},
+            {slot.output_pinned.as<float>(), static_cast<std::size_t>(engine_->max_detections()) * engine_->output_stride()},
             slot.frame_ctx);
 
         int w = slot.frame_ctx.src_width;

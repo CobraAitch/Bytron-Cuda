@@ -35,6 +35,7 @@ namespace bytron {
      *       passing to Pipeline.
      */
     struct Config {
+        int gpu_device    = 0;  ///< CUDA device index (0 = first GPU)
         int monitor_index = 0;  ///< DXGI output index for desktop capture (0 = primary)
 
         std::filesystem::path onnx_path;                       ///< Path to YOLO26 ONNX model (required)

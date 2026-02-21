@@ -56,6 +56,19 @@ namespace bytron {
         spdlog::info("Output: '{}' {}", output_name_,
                      dims_to_string(engine_->getTensorShape(output_name_.c_str())));
 
+        // Validate output shape: expect [N, max_detections, values_per_det] where
+        // values_per_det >= 6 (x1, y1, x2, y2, confidence, class_id).
+        auto out_dims = output_dims();
+        if (out_dims.nbDims < 3 || out_dims.d[2] < 6) {
+            throw std::runtime_error(std::format(
+                "Unsupported output shape {}: expected [N, D, >=6] (NMS-free detection format)",
+                dims_to_string(out_dims)));
+        }
+        if (out_dims.d[2] > 6) {
+            spdlog::info("Output stride {} > 6 — extra values per detection will be ignored",
+                         out_dims.d[2]);
+        }
+
         if (num_io > 2) {
             spdlog::warn("Engine has {} I/O tensors (expected 2) — extra tensors:", num_io);
             for (int i = 2; i < num_io; ++i) {
@@ -238,6 +251,7 @@ namespace bytron {
     int TrtEngine::model_width()    const { return static_cast<int>(input_dims().d[3]); }
     int TrtEngine::model_height()   const { return static_cast<int>(input_dims().d[2]); }
     int TrtEngine::max_detections() const { return static_cast<int>(output_dims().d[1]); }
+    int TrtEngine::output_stride()  const { return static_cast<int>(output_dims().d[2]); }
 
 }
 

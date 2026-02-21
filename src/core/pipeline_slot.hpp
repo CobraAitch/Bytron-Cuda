@@ -43,7 +43,7 @@ namespace bytron {
 
         CudaDeviceBuffer raw_buffer;     ///< Captured BGRA frame (device, max_w * max_h * 4)
         CudaDeviceBuffer input_buffer;   ///< Preprocessed CHW float tensor (device, 3 * H * W * 4)
-        CudaDeviceBuffer output_buffer;  ///< Raw TRT output (device, max_dets * 6 * sizeof(float))
+        CudaDeviceBuffer output_buffer;  ///< Raw TRT output (device, max_dets * stride * sizeof(float))
         CudaPinnedBuffer output_pinned;  ///< Host copy of output for CPU postprocessing
 
         FrameContext frame_ctx;  ///< Per-frame metadata populated during processing
@@ -56,13 +56,14 @@ namespace bytron {
          * @param model_w     Model input width (for input_buffer sizing).
          * @param model_h     Model input height.
          * @param max_dets    Maximum detections (for output_buffer sizing).
+         * @param det_stride  Values per detection from model output (e.g. 6).
          */
         void allocate(int max_frame_w, int max_frame_h,
-                      int model_w, int model_h, int max_dets) {
+                      int model_w, int model_h, int max_dets, int det_stride = 6) {
             raw_buffer    = CudaDeviceBuffer(std::size_t(max_frame_w) * max_frame_h * 4);
             input_buffer  = CudaDeviceBuffer(std::size_t(3) * model_h * model_w * sizeof(float));
-            output_buffer = CudaDeviceBuffer(std::size_t(max_dets) * 6 * sizeof(float));
-            output_pinned = CudaPinnedBuffer(std::size_t(max_dets) * 6 * sizeof(float));
+            output_buffer = CudaDeviceBuffer(std::size_t(max_dets) * det_stride * sizeof(float));
+            output_pinned = CudaPinnedBuffer(std::size_t(max_dets) * det_stride * sizeof(float));
         }
     };
 

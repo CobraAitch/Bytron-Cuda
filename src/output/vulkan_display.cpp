@@ -245,11 +245,38 @@ namespace bytron {
         VkSurfaceCapabilitiesKHR caps;
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device_, surface_, &caps);
 
-        swapchain_extent_ = caps.currentExtent;
-        if (swapchain_extent_.width == UINT32_MAX) {
-            swapchain_extent_.width  = static_cast<std::uint32_t>(capture_w_);
-            swapchain_extent_.height = static_cast<std::uint32_t>(capture_h_);
+        // Determine swapchain extent: use the compositor's current extent if available,
+        // otherwise fall back to capture dimensions clamped to device limits.
+        if (caps.currentExtent.width != UINT32_MAX) {
+            swapchain_extent_ = caps.currentExtent;
+        } else {
+            swapchain_extent_.width  = std::clamp(static_cast<std::uint32_t>(capture_w_),
+                                                   caps.minImageExtent.width,
+                                                   caps.maxImageExtent.width);
+            swapchain_extent_.height = std::clamp(static_cast<std::uint32_t>(capture_h_),
+                                                   caps.minImageExtent.height,
+                                                   caps.maxImageExtent.height);
         }
+
+        // Query supported surface formats; prefer B8G8R8A8_UNORM (matches BGRA frame data).
+        std::uint32_t format_count = 0;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_, &format_count, nullptr);
+        std::vector<VkSurfaceFormatKHR> formats(format_count);
+        vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_, &format_count, formats.data());
+
+        swapchain_format_ = formats[0].format;
+        VkColorSpaceKHR color_space = formats[0].colorSpace;
+        for (const auto& fmt : formats) {
+            if (fmt.format == VK_FORMAT_B8G8R8A8_UNORM &&
+                fmt.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+                swapchain_format_ = fmt.format;
+                color_space = fmt.colorSpace;
+                break;
+            }
+        }
+
+        if (swapchain_format_ != VK_FORMAT_B8G8R8A8_UNORM)
+            spdlog::warn("B8G8R8A8_UNORM not available; using format {}", static_cast<int>(swapchain_format_));
 
         std::uint32_t present_mode_count = 0;
         vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device_, surface_,
@@ -279,7 +306,7 @@ namespace bytron {
         sc_info.surface          = surface_;
         sc_info.minImageCount    = image_count;
         sc_info.imageFormat      = swapchain_format_;
-        sc_info.imageColorSpace  = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+        sc_info.imageColorSpace  = color_space;
         sc_info.imageExtent      = swapchain_extent_;
         sc_info.imageArrayLayers = 1;
         sc_info.imageUsage       = VK_IMAGE_USAGE_TRANSFER_DST_BIT;

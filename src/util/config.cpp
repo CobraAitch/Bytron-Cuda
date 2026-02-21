@@ -30,6 +30,7 @@ namespace bytron {
         auto j = nlohmann::json::parse(file);
         Config cfg;
 
+        if (j.contains("gpu_device"))              cfg.gpu_device             = j["gpu_device"];
         if (j.contains("monitor_index"))          cfg.monitor_index          = j["monitor_index"];
         if (j.contains("onnx_path"))              cfg.onnx_path              = j["onnx_path"].get<std::string>();
         if (j.contains("engine_cache_dir"))       cfg.engine_cache_dir       = j["engine_cache_dir"].get<std::string>();
@@ -73,7 +74,8 @@ namespace bytron {
                 return argv[++i];
             };
 
-            if      (arg == "--monitor"  || arg == "-d") monitor_index          = std::stoi(next());
+            if      (arg == "--gpu"     || arg == "-g") gpu_device             = std::stoi(next());
+            else if (arg == "--monitor"  || arg == "-d") monitor_index          = std::stoi(next());
             else if (arg == "--onnx"     || arg == "-m") onnx_path              = next();
             else if (arg == "--precision" || arg == "-p") {
                 auto p = next();
