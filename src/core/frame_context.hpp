@@ -1,3 +1,8 @@
+/**
+ * @file frame_context.hpp
+ * @brief Per-frame metadata and detection results passed through the pipeline.
+ */
+
 #pragma once
 
 #include <cstdint>
@@ -6,22 +11,27 @@
 
 namespace bytron {
 
-    /// <summary>
-    /// Per-frame metadata that travels through the pipeline alongside its buffers.
-    /// Holds source dimensions, letterbox transform params, and final detection results.
-    /// </summary>
+    /**
+     * @brief Carries frame identity, letterbox transform, and detection results.
+     *
+     * Populated during preprocessing (letterbox params) and postprocessing
+     * (detections). The letterbox params map model-space coordinates back
+     * to source resolution: `src_coord = (model_coord - pad) / scale`.
+     *
+     * @note Thread safety: Owned by one PipelineSlot; not shared across
+     *       threads simultaneously.
+     */
     struct FrameContext {
-        std::uint64_t frame_id = 0;
-        int slot_index = 0;
+        std::uint64_t frame_id   = 0;  ///< Monotonically increasing frame counter
+        int           slot_index = 0;  ///< Pipeline slot that processed this frame
 
-        int src_width = 0;
-        int src_height = 0;
+        int   src_width  = 0;    ///< Original capture frame width in pixels
+        int   src_height = 0;    ///< Original capture frame height in pixels
+        float scale      = 1.0f; ///< Letterbox scale factor (min of w_scale, h_scale)
+        float pad_x      = 0.0f; ///< Horizontal letterbox padding in model pixels
+        float pad_y      = 0.0f; ///< Vertical letterbox padding in model pixels
 
-        // Letterbox transform (needed to rescale detections back to source coords)
-        float scale = 1.0f;
-        float pad_x = 0.0f;
-        float pad_y = 0.0f;
-
-        std::vector<Detection> detections;
+        std::vector<Detection> detections;  ///< Post-threshold detections in source-pixel coords
     };
+
 }

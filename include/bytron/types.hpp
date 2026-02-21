@@ -1,53 +1,46 @@
+/**
+ * @file types.hpp
+ * @brief Core detection types and precision enum for the Bytron public API.
+ */
+
 #pragma once
 
 #include <cstdint>
+#include <type_traits>
 #include <vector>
 
 namespace bytron {
 
-    /// <summary>
-    /// Represents a bounding box defined by two corner points.
-    /// </summary>
+    /**
+     * @brief Axis-aligned bounding box in pixel coordinates.
+     *
+     * Coordinates are in the original source frame's pixel space after
+     * inverse letterbox rescaling (not model input space).
+     */
     struct BBox {
-        /// <summary>
-        /// Float variables, used to store coordinates for two points (x1, y1) top-left and (x2, y2) bottom right.
-        /// </summary>
-        float x1, y1, x2, y2;
+        float x1, y1;  ///< Top-left corner (pixels, origin = top-left of frame)
+        float x2, y2;  ///< Bottom-right corner (pixels)
     };
 
-    /// <summary>
-    /// Represents a detection result from an object detection model.
-    /// </summary>
+    /**
+     * @brief Single object detection result.
+     *
+     * Layout is trivially copyable (24 bytes) to allow direct GPU memcpy
+     * between device and host buffers.
+     */
     struct Detection {
-        /// <summary>
-        /// A bounding box variable.
-        /// </summary>
-        BBox box;
-
-        /// <summary>
-        /// The confidence score for the result predicted by the model.
-        /// </summary>
-        float confidence;
-
-        /// <summary>
-        /// The class id of the current detection by the model.
-        /// </summary>
-        int class_id;
+        BBox  box;         ///< Bounding box in source-frame pixel coordinates
+        float confidence;  ///< Detection confidence in [0.0, 1.0]
+        int   class_id;    ///< Class index from the model's label set
     };
 
+    static_assert(std::is_trivially_copyable_v<BBox>);
+    static_assert(std::is_trivially_copyable_v<Detection>);
+    static_assert(sizeof(Detection) == 24, "Detection layout changed — update GPU code");
 
-    /// <summary>
-    /// Specifies the precision mode for YOLO model inference.
-    /// </summary>
+    /** @brief TensorRT inference precision mode. */
     enum class Precision {
-        /// <summary>
-        /// 16-bit floating point precision for YOLO model inference.
-        /// </summary>
-        FP16,
-
-        /// <summary>
-        /// 8-bit integer quantized precision for YOLO model inference.
-        /// </summary>
-        INT8
+        FP16,  ///< Half-precision floating point (default)
+        INT8   ///< 8-bit integer quantization (requires calibration data)
     };
 }

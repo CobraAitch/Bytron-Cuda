@@ -31,28 +31,32 @@ endif()
 set(CMAKE_CUDA_ARCHITECTURES ${BYTRON_CUDA_ARCHS})
 
 # ──────────────────────────── Dependencies ───────────────────────────────
-find_package(CUDAToolkit REQUIRED)
-find_package(TensorRT    REQUIRED)
-find_package(OpenCV      REQUIRED COMPONENTS core imgproc imgcodecs highgui videoio)
-find_package(spdlog      REQUIRED)
-find_package(nlohmann_json REQUIRED)
+find_package(CUDAToolkit    REQUIRED)
+find_package(TensorRT       REQUIRED)
+find_package(Vulkan         REQUIRED)
+find_package(glfw3          REQUIRED)
+find_package(spdlog         REQUIRED)
+find_package(nlohmann_json  REQUIRED)
 
 # ──────────────────────────── Sources ────────────────────────────────────
 set(BYTRON_SOURCES
     src/core/pipeline.cpp
-    src/core/cuda_buffer.cpp
-    src/capture/video_source_opencv.cpp
-    src/capture/video_source_factory.cpp
+    src/capture/desktop_capture.cpp
     src/preprocess/gpu_preprocessor.cpp
     src/engine/trt_engine.cpp
     src/engine/calibrator.cpp
     src/postprocess/postprocessor.cpp
     src/output/display_sink.cpp
+    src/output/overlay_sink.cpp
+    src/output/overlay_window.cpp
+    src/output/vulkan_display.cpp
     src/util/config.cpp
+    src/util/stb_image_impl.cpp
 )
 
 set(BYTRON_CUDA_SOURCES
     src/preprocess/preprocess_kernels.cu
+    src/output/overlay_kernels.cu
 )
 
 # ──────────────────────────── Library target ─────────────────────────────
@@ -68,9 +72,12 @@ target_link_libraries(bytron_lib
         CUDA::cudart
         TensorRT::nvinfer
         TensorRT::nvonnxparser
-        opencv_core opencv_imgproc opencv_imgcodecs opencv_highgui opencv_videoio
+        Vulkan::Vulkan
+        glfw
         spdlog::spdlog
         nlohmann_json::nlohmann_json
+        d3d11
+        dxgi
 )
 
 # ──────────────────────────── Executable ─────────────────────────────────

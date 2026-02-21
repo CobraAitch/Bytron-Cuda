@@ -1,4 +1,10 @@
+/**
+ * @file main.cpp
+ * @brief Application entry point: CLI parsing, sink selection, and pipeline execution.
+ */
+
 #include "core/pipeline.hpp"
+#include "output/overlay_sink.hpp"
 #include "output/display_sink.hpp"
 #include "output/callback_sink.hpp"
 #include "util/config.hpp"
@@ -12,7 +18,6 @@
 static std::unique_ptr<bytron::Pipeline> g_pipeline;
 
 static void signal_handler(int /*sig*/) {
-    spdlog::info("Interrupt received, stopping pipeline...");
     if (g_pipeline) g_pipeline->stop();
 }
 
@@ -21,11 +26,13 @@ static void print_usage() {
 Bytron - Pipelined CUDA + TensorRT YOLO26 Inference Engine
 
 Usage:
-  bytron --video <source> --onnx <model.onnx> [options]
+  bytron --onnx <model.onnx> [options]
+
+Captures the desktop via DXGI Desktop Duplication (primary monitor by default).
 
 Options:
-  -v, --video <uri>       Video source (file path, RTSP URL, or camera index)
   -m, --onnx <path>       Path to YOLO26 ONNX model
+  -d, --monitor <index>   Monitor index for desktop capture (default: 0)
   -p, --precision <fp16|int8>  Inference precision (default: fp16)
   -c, --config <path>     JSON config file
   --conf <float>          Confidence threshold (default: 0.25)
@@ -33,6 +40,7 @@ Options:
   --calibration-dir <dir> Directory of images for INT8 calibration
   --calibration-batch <n> Batch size for INT8 calibration (default: 8)
   --no-display            Disable display window
+  --no-overlay            Use full-frame display instead of transparent overlay
   --no-cuda-graphs        Disable CUDA graph optimization
 )";
 }
@@ -49,17 +57,13 @@ int main(int argc, char** argv) {
         bytron::Config cfg;
         cfg.apply_cli(argc, argv);
 
-        if (cfg.video_uri.empty()) {
-            spdlog::error("No video source specified. Use --video <source>");
-            return 1;
-        }
         if (cfg.onnx_path.empty()) {
             spdlog::error("No ONNX model specified. Use --onnx <model.onnx>");
             return 1;
         }
 
         spdlog::info("Bytron starting...");
-        spdlog::info("Video:     {}", cfg.video_uri);
+        spdlog::info("Monitor:   {}", cfg.monitor_index);
         spdlog::info("Model:     {}", cfg.onnx_path.string());
         spdlog::info("Precision: {}", cfg.precision == bytron::Precision::FP16 ? "FP16" : "INT8");
         spdlog::info("Slots:     {}", cfg.num_pipeline_slots);
@@ -69,8 +73,16 @@ int main(int argc, char** argv) {
         std::signal(SIGINT, signal_handler);
         std::signal(SIGTERM, signal_handler);
 
-        if (cfg.display) {
-            bytron::DisplaySink display_sink("Bytron");
+        // Sink priority: overlay (transparent, capture-excluded) > full-frame
+        // display (Vulkan CUDA interop) > headless callback (metadata only).
+        if (cfg.display && cfg.overlay) {
+            bytron::OverlaySink overlay_sink(g_pipeline->capture_width(),
+                                              g_pipeline->capture_height());
+            g_pipeline->run(overlay_sink);
+        } else if (cfg.display) {
+            bytron::DisplaySink display_sink("Bytron",
+                                              g_pipeline->capture_width(),
+                                              g_pipeline->capture_height());
             g_pipeline->run(display_sink);
         } else {
             bytron::CallbackSink callback_sink([](const bytron::FrameContext&) {});

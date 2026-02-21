@@ -1,3 +1,8 @@
+/**
+ * @file pipeline_slot.hpp
+ * @brief Per-slot GPU resources for the pipelined inference engine.
+ */
+
 #pragma once
 
 #include <NvInfer.h>
@@ -9,9 +14,7 @@
 
 namespace bytron {
 
-    /// <summary>
-    /// Custom deleter for TensorRT objects allocated by the runtime.
-    /// </summary>
+    /** @brief TRT 10.x custom deleter (uses `delete`, not `destroy()`). */
     template <typename T>
     struct TrtDeleter {
         void operator()(T* p) const noexcept { delete p; }
@@ -20,42 +23,47 @@ namespace bytron {
     template <typename T>
     using TrtUniquePtr = std::unique_ptr<T, TrtDeleter<T>>;
 
-    /// <summary>
-    /// One slot in the triple-buffered pipeline. Each slot owns its own stream,
-    /// buffers, and TRT execution context so multiple frames can overlap on the GPU.
-    /// </summary>
+    /**
+     * @brief Holds all GPU resources needed for one concurrent inference slot.
+     *
+     * Each slot has its own CUDA stream, TRT execution context, and device
+     * buffers, allowing multiple frames to be in-flight simultaneously.
+     *
+     * @note Thread safety: Accessed by the inference thread only, except
+     *       display_copy_done which is recorded by the output sink's thread.
+     */
     struct PipelineSlot {
-        int index = 0;
+        int index = 0;  ///< Slot index within the pipeline [0, MAX_SLOTS)
 
-        CudaStream stream;
-        CudaEvent  ready_event;
+        CudaStream stream;              ///< Dedicated CUDA stream for this slot's work
+        CudaEvent  ready_event;         ///< Signaled when inference + D2H copy completes
+        CudaEvent  display_copy_done;   ///< Signaled by OutputSink after copying frame data
 
-        TrtUniquePtr<nvinfer1::IExecutionContext> trt_context;
+        TrtUniquePtr<nvinfer1::IExecutionContext> trt_context;  ///< Per-slot TRT execution context
 
-        CudaDeviceBuffer raw_buffer;     // BGR source frame on device
-        CudaDeviceBuffer input_buffer;   // CHW float32 preprocessed tensor
-        CudaDeviceBuffer output_buffer;  // [max_det, 6] on device
+        CudaDeviceBuffer raw_buffer;     ///< Captured BGRA frame (device, max_w * max_h * 4)
+        CudaDeviceBuffer input_buffer;   ///< Preprocessed CHW float tensor (device, 3 * H * W * 4)
+        CudaDeviceBuffer output_buffer;  ///< Raw TRT output (device, max_dets * 6 * sizeof(float))
+        CudaPinnedBuffer output_pinned;  ///< Host copy of output for CPU postprocessing
 
-        CudaPinnedBuffer output_pinned;  // [max_det, 6] host-side for postprocess
+        FrameContext frame_ctx;  ///< Per-frame metadata populated during processing
 
-        FrameContext frame_ctx;
-
-        /// <summary>
-        /// Allocate all GPU and pinned buffers for this slot.
-        /// </summary>
-        void allocate(int max_frame_width, int max_frame_height,
-                      int model_w, int model_h, int max_detections) {
-            raw_buffer = CudaDeviceBuffer(
-                static_cast<std::size_t>(max_frame_width) * max_frame_height * 3);
-
-            input_buffer = CudaDeviceBuffer(
-                static_cast<std::size_t>(3) * model_h * model_w * sizeof(float));
-
-            output_buffer = CudaDeviceBuffer(
-                static_cast<std::size_t>(max_detections) * 6 * sizeof(float));
-
-            output_pinned = CudaPinnedBuffer(
-                static_cast<std::size_t>(max_detections) * 6 * sizeof(float));
+        /**
+         * @brief Allocate all device and pinned buffers for this slot.
+         *
+         * @param max_frame_w Maximum capture frame width (for raw_buffer sizing).
+         * @param max_frame_h Maximum capture frame height.
+         * @param model_w     Model input width (for input_buffer sizing).
+         * @param model_h     Model input height.
+         * @param max_dets    Maximum detections (for output_buffer sizing).
+         */
+        void allocate(int max_frame_w, int max_frame_h,
+                      int model_w, int model_h, int max_dets) {
+            raw_buffer    = CudaDeviceBuffer(std::size_t(max_frame_w) * max_frame_h * 4);
+            input_buffer  = CudaDeviceBuffer(std::size_t(3) * model_h * model_w * sizeof(float));
+            output_buffer = CudaDeviceBuffer(std::size_t(max_dets) * 6 * sizeof(float));
+            output_pinned = CudaPinnedBuffer(std::size_t(max_dets) * 6 * sizeof(float));
         }
     };
+
 }
