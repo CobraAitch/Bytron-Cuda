@@ -45,6 +45,8 @@ namespace bytron {
         if (j.contains("use_cuda_graphs"))        cfg.use_cuda_graphs        = j["use_cuda_graphs"];
         if (j.contains("calibration_images_dir")) cfg.calibration_images_dir = j["calibration_images_dir"].get<std::string>();
         if (j.contains("calibration_batch_size")) cfg.calibration_batch_size = j["calibration_batch_size"];
+        if (j.contains("max_workspace_bytes"))     cfg.max_workspace_bytes    = j["max_workspace_bytes"].get<std::size_t>();
+        if (j.contains("max_aux_streams"))        cfg.max_aux_streams        = j["max_aux_streams"];
         if (j.contains("display"))                cfg.display                = j["display"];
         if (j.contains("overlay"))                cfg.overlay                = j["overlay"];
 

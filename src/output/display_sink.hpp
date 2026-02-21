@@ -62,14 +62,14 @@ namespace bytron {
 
         /** @brief Double-buffered frame slot for inference-to-display handoff. */
         struct FrameMailbox {
-            CudaDeviceBuffer       frame_buf;
-            CudaDeviceBuffer       det_buf;
-            CudaEvent              copy_done;
-            int                    width          = 0;
-            int                    height         = 0;
-            int                    pitch          = 0;
-            int                    num_detections = 0;
-            std::vector<Detection> detections;
+            CudaDeviceBuffer  frame_buf;
+            CudaDeviceBuffer  det_buf;
+            CudaPinnedBuffer  det_pinned;    ///< Pinned host copy for truly async H2D transfer.
+            CudaEvent         copy_done;
+            int               width          = 0;
+            int               height         = 0;
+            int               pitch          = 0;
+            int               num_detections = 0;
         };
 
         static constexpr int MAILBOX_SLOTS = 2;

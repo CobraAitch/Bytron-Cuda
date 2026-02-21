@@ -14,9 +14,10 @@ namespace bytron {
     /**
      * @brief Draw green bounding boxes around detections directly on a device BGRA frame.
      *
-     * Launches a 2D grid of 32x32 thread blocks. Each thread tests its pixel
-     * against all detection bounding boxes and writes opaque green (BGRA 0,255,0,255)
-     * if the pixel falls on a box border.
+     * Launches one block per detection (256 threads). Each block decomposes the
+     * box border into 4 non-overlapping strips (top/bottom/left/right) and threads
+     * cooperatively write opaque green (BGRA 0,255,0,255) pixels.
+     * Work is O(N_dets * box_perimeter * thickness) instead of O(frame_pixels * N_dets).
      *
      * @param [in,out] frame_bgra        Device pointer to BGRA frame buffer.
      * @param [in]     width             Frame width in pixels.

@@ -42,7 +42,8 @@ namespace bytron {
      * @param [in]  src_pitch Source row stride in bytes (typically src_w * 4).
      * @param [in]  stream    CUDA stream for async execution.
      *
-     * @note Kernel config: 32x32 thread blocks, grid covers (dst_w, dst_h).
+     * @note Kernel config: 32x8 thread blocks, grid covers (dst_w, dst_h).
+     *       Source pixels loaded as uint32_t via __ldg() for coalesced access.
      */
     void launch_fused_preprocess_bgra(
         const std::uint8_t* src, float* dst,

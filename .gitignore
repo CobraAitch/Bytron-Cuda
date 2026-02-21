@@ -17,3 +17,6 @@ CMakeSettings.json
 
 # vcpkg installed
 vcpkg_installed/
+
+# Windows artifacts
+nul

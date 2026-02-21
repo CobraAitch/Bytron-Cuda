@@ -46,10 +46,12 @@ namespace bytron {
         float confidence_threshold = 0.25f;  ///< Minimum detection confidence [0.0, 1.0]
         int   max_detections       = 300;    ///< Maximum detections per frame (matches YOLO26 output dim)
 
-        int  num_pipeline_slots = 3;     ///< Concurrent inference slots [2, MAX_SLOTS]
-        bool use_cuda_graphs    = true;  ///< Enable CUDA graph capture for reduced launch overhead
-        int  max_frame_width    = 3840;  ///< Maximum capture frame width for buffer pre-allocation
-        int  max_frame_height   = 2160;  ///< Maximum capture frame height for buffer pre-allocation
+        int         num_pipeline_slots  = 3;             ///< Concurrent inference slots [2, MAX_SLOTS]
+        bool        use_cuda_graphs    = true;           ///< Enable CUDA graph capture for reduced launch overhead
+        int         max_frame_width    = 3840;           ///< Maximum capture frame width for buffer pre-allocation
+        int         max_frame_height   = 2160;           ///< Maximum capture frame height for buffer pre-allocation
+        std::size_t max_workspace_bytes = 1ULL << 30;    ///< TRT workspace limit (default 1 GB)
+        int         max_aux_streams    = 4;              ///< TRT auxiliary streams for layer parallelism
 
         std::filesystem::path calibration_images_dir;  ///< Image directory for INT8 calibration
         int calibration_batch_size = 8;                ///< Images per INT8 calibration batch

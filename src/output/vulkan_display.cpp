@@ -92,12 +92,15 @@ namespace bytron {
                 staging_mapped_ptr_ = nullptr;
             }
         } else {
+            for (auto& sem : cuda_ext_sem_)
+                if (sem) cudaDestroyExternalSemaphore(sem);
             if (cuda_staging_ptr_) cudaFree(cuda_staging_ptr_);
             if (cuda_ext_mem_)     cudaDestroyExternalMemory(cuda_ext_mem_);
         }
 
         for (auto& f : frames_) {
             if (f.fence)           vkDestroyFence(device_, f.fence, nullptr);
+            if (f.cuda_ready)      vkDestroySemaphore(device_, f.cuda_ready, nullptr);
             if (f.render_finished) vkDestroySemaphore(device_, f.render_finished, nullptr);
             if (f.image_available) vkDestroySemaphore(device_, f.image_available, nullptr);
         }
@@ -132,6 +135,7 @@ namespace bytron {
 
         if (!transparent_) {
             extensions.push_back(VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME);
+            extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME);
         }
 
         VkInstanceCreateInfo create_info{};
@@ -217,6 +221,8 @@ namespace bytron {
         if (!transparent_) {
             device_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
             device_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
+            device_extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME);
+            device_extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
         }
 
         VkPhysicalDeviceFeatures features{};
@@ -468,10 +474,47 @@ namespace bytron {
         fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-        for (auto& f : frames_) {
+        // For full-frame mode: exportable semaphore that CUDA signals after staging write.
+        VkExportSemaphoreCreateInfo export_sem_info{};
+        export_sem_info.sType       = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
+        export_sem_info.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+
+        VkSemaphoreCreateInfo cuda_sem_info{};
+        cuda_sem_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        cuda_sem_info.pNext = &export_sem_info;
+
+        auto vkGetSemaphoreWin32HandleKHR_fn = !transparent_
+            ? reinterpret_cast<PFN_vkGetSemaphoreWin32HandleKHR>(
+                  vkGetDeviceProcAddr(device_, "vkGetSemaphoreWin32HandleKHR"))
+            : nullptr;
+
+        if (!transparent_ && !vkGetSemaphoreWin32HandleKHR_fn)
+            throw std::runtime_error("vkGetSemaphoreWin32HandleKHR not available");
+
+        for (int i = 0; i < FRAMES_IN_FLIGHT; ++i) {
+            auto& f = frames_[i];
             VK_CHECK(vkCreateSemaphore(device_, &sem_info, nullptr, &f.image_available));
             VK_CHECK(vkCreateSemaphore(device_, &sem_info, nullptr, &f.render_finished));
             VK_CHECK(vkCreateFence(device_, &fence_info, nullptr, &f.fence));
+
+            if (!transparent_) {
+                VK_CHECK(vkCreateSemaphore(device_, &cuda_sem_info, nullptr, &f.cuda_ready));
+
+                VkSemaphoreGetWin32HandleInfoKHR handle_info{};
+                handle_info.sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR;
+                handle_info.semaphore  = f.cuda_ready;
+                handle_info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+
+                HANDLE win32_handle = nullptr;
+                VK_CHECK(vkGetSemaphoreWin32HandleKHR_fn(device_, &handle_info, &win32_handle));
+
+                cudaExternalSemaphoreHandleDesc sem_desc{};
+                sem_desc.type                = cudaExternalSemaphoreHandleTypeOpaqueWin32;
+                sem_desc.handle.win32.handle = win32_handle;
+
+                CUDA_CHECK(cudaImportExternalSemaphore(&cuda_ext_sem_[i], &sem_desc));
+                CloseHandle(win32_handle);
+            }
         }
     }
 
@@ -543,12 +586,18 @@ namespace bytron {
 
         vkEndCommandBuffer(fr.cmd);
 
-        VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        VkSemaphore          wait_sems[2]   = { fr.image_available, fr.cuda_ready };
+        VkPipelineStageFlags wait_stages[2] = { VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                                 VK_PIPELINE_STAGE_TRANSFER_BIT };
+        // Wait on CUDA semaphore only when present() signaled it this frame.
+        std::uint32_t wait_count = pending_cuda_signal_ ? 2u : 1u;
+        pending_cuda_signal_ = false;
+
         VkSubmitInfo submit_info{};
         submit_info.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit_info.waitSemaphoreCount   = 1;
-        submit_info.pWaitSemaphores      = &fr.image_available;
-        submit_info.pWaitDstStageMask    = &wait_stage;
+        submit_info.waitSemaphoreCount   = wait_count;
+        submit_info.pWaitSemaphores      = wait_sems;
+        submit_info.pWaitDstStageMask    = wait_stages;
         submit_info.commandBufferCount   = 1;
         submit_info.pCommandBuffers      = &fr.cmd;
         submit_info.signalSemaphoreCount = 1;
@@ -588,7 +637,13 @@ namespace bytron {
         CUDA_CHECK(cudaMemcpyAsync(cuda_staging_ptr_, device_bgra,
                                     frame_bytes, cudaMemcpyDeviceToDevice, cuda_stream));
 
-        CUDA_CHECK(cudaStreamSynchronize(cuda_stream));
+        // Signal the external semaphore from CUDA after the staging write completes.
+        // Vulkan will wait on this semaphore GPU-side before reading the staging buffer,
+        // eliminating the need for cudaStreamSynchronize (no CPU blocking).
+        cudaExternalSemaphoreSignalParams signal_params{};
+        CUDA_CHECK(cudaSignalExternalSemaphoresAsync(
+            &cuda_ext_sem_[current_frame_], &signal_params, 1, cuda_stream));
+        pending_cuda_signal_ = true;
 
         submit_and_present();
     }

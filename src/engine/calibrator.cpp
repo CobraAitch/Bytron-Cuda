@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstring>
 #include <fstream>
+#include <random>
 
 namespace bytron {
 
@@ -33,7 +34,9 @@ namespace bytron {
                 image_paths_.push_back(entry.path());
         }
 
-        std::ranges::sort(image_paths_);
+        // Shuffle for better calibration statistics (fixed seed for reproducibility).
+        std::mt19937 rng(42);
+        std::ranges::shuffle(image_paths_, rng);
 
         if (image_paths_.empty())
             spdlog::warn("No calibration images found in {}", image_dir.string());
@@ -44,18 +47,22 @@ namespace bytron {
         CUDA_CHECK(cudaMalloc(&device_input_, input_bytes));
 
         constexpr std::size_t max_raw_size = 3840ULL * 2160 * 4;
-        CUDA_CHECK(cudaMalloc(&device_raw_, max_raw_size));
-
         pinned_staging_size_ = max_raw_size;
-        CUDA_CHECK(cudaMallocHost(&pinned_staging_, pinned_staging_size_));
-        CUDA_CHECK(cudaStreamCreate(&stream_));
+
+        for (int b = 0; b < NUM_BUFS; ++b) {
+            CUDA_CHECK(cudaMalloc(&device_raw_[b], max_raw_size));
+            CUDA_CHECK(cudaMallocHost(&pinned_staging_[b], pinned_staging_size_));
+            CUDA_CHECK(cudaStreamCreate(&stream_[b]));
+        }
     }
 
     Int8EntropyCalibrator::~Int8EntropyCalibrator() {
-        if (device_input_)   cudaFree(device_input_);
-        if (device_raw_)     cudaFree(device_raw_);
-        if (pinned_staging_) cudaFreeHost(pinned_staging_);
-        if (stream_)         cudaStreamDestroy(stream_);
+        if (device_input_) cudaFree(device_input_);
+        for (int b = 0; b < NUM_BUFS; ++b) {
+            if (device_raw_[b])     cudaFree(device_raw_[b]);
+            if (pinned_staging_[b]) cudaFreeHost(pinned_staging_[b]);
+            if (stream_[b])         cudaStreamDestroy(stream_[b]);
+        }
     }
 
     int32_t Int8EntropyCalibrator::getBatchSize() const noexcept { return batch_size_; }
@@ -73,6 +80,13 @@ namespace bytron {
             auto single_input_bytes = std::size_t(3) * input_h_ * input_w_ * sizeof(float);
 
             for (int i = 0; i < actual_batch; ++i) {
+                int buf = i % NUM_BUFS;
+
+                // Ensure previous use of this buffer's stream is complete before
+                // overwriting pinned staging memory.
+                if (i >= NUM_BUFS)
+                    CUDA_CHECK(cudaStreamSynchronize(stream_[buf]));
+
                 const auto& path = image_paths_[start_idx + i];
 
                 int src_w = 0, src_h = 0, channels = 0;
@@ -81,7 +95,7 @@ namespace bytron {
                     spdlog::warn("Failed to load calibration image: {}", path.string());
                     CUDA_CHECK(cudaMemsetAsync(
                         static_cast<char*>(device_input_) + i * single_input_bytes,
-                        0, single_input_bytes, stream_));
+                        0, single_input_bytes, stream_[buf]));
                     continue;
                 }
 
@@ -93,11 +107,11 @@ namespace bytron {
                     stbi_image_free(rgba_data);
                     CUDA_CHECK(cudaMemsetAsync(
                         static_cast<char*>(device_input_) + i * single_input_bytes,
-                        0, single_input_bytes, stream_));
+                        0, single_input_bytes, stream_[buf]));
                     continue;
                 }
 
-                auto* pixels = static_cast<unsigned char*>(pinned_staging_);
+                auto* pixels = static_cast<unsigned char*>(pinned_staging_[buf]);
                 std::memcpy(pixels, rgba_data, raw_bytes);
                 stbi_image_free(rgba_data);
 
@@ -105,24 +119,26 @@ namespace bytron {
                 for (std::size_t p = 0; p < raw_bytes; p += 4)
                     std::swap(pixels[p], pixels[p + 2]);
 
-                CUDA_CHECK(cudaMemcpyAsync(device_raw_, pinned_staging_, raw_bytes,
-                                            cudaMemcpyHostToDevice, stream_));
+                CUDA_CHECK(cudaMemcpyAsync(device_raw_[buf], pinned_staging_[buf], raw_bytes,
+                                            cudaMemcpyHostToDevice, stream_[buf]));
 
                 auto* dst_ptr = reinterpret_cast<float*>(
                     static_cast<char*>(device_input_) + i * single_input_bytes);
 
                 launch_fused_preprocess_bgra(
-                    static_cast<const std::uint8_t*>(device_raw_), dst_ptr,
-                    src_w, src_h, src_w * 4, input_w_, input_h_, stream_);
+                    static_cast<const std::uint8_t*>(device_raw_[buf]), dst_ptr,
+                    src_w, src_h, src_w * 4, input_w_, input_h_, stream_[buf]);
             }
 
             for (int i = actual_batch; i < batch_size_; ++i) {
                 CUDA_CHECK(cudaMemsetAsync(
                     static_cast<char*>(device_input_) + i * single_input_bytes,
-                    0, single_input_bytes, stream_));
+                    0, single_input_bytes, stream_[0]));
             }
 
-            CUDA_CHECK(cudaStreamSynchronize(stream_));
+            // Synchronize both streams before returning the batch.
+            for (int b = 0; b < NUM_BUFS; ++b)
+                CUDA_CHECK(cudaStreamSynchronize(stream_[b]));
 
             bindings[0] = device_input_;
             ++current_batch_;

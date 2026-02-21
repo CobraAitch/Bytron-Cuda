@@ -45,10 +45,14 @@ namespace bytron {
         std::vector<std::filesystem::path> image_paths_;
         int current_batch_ = 0;
 
-        void*        device_input_       = nullptr;
-        void*        device_raw_         = nullptr;
-        cudaStream_t stream_             = nullptr;
-        void*        pinned_staging_     = nullptr;
+        void*        device_input_ = nullptr;
+
+        // Double-buffered: two raw buffers + pinned staging + streams for
+        // overlapping CPU image loading with GPU H2D + preprocess.
+        static constexpr int NUM_BUFS = 2;
+        void*        device_raw_[NUM_BUFS]{};
+        cudaStream_t stream_[NUM_BUFS]{};
+        void*        pinned_staging_[NUM_BUFS]{};
         std::size_t  pinned_staging_size_ = 0;
 
         std::vector<char> calibration_cache_;

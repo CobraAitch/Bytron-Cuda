@@ -26,6 +26,9 @@ if(CMAKE_CUDA_COMPILER)
     add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
     add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-allow-unsupported-compiler>)
 
+    # PTX-level optimization for Release builds.
+    add_compile_options($<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Release>>:-Xptxas=-O3>)
+
     if(MSVC)
         add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/W4>)
     endif()

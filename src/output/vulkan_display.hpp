@@ -60,9 +60,10 @@ namespace bytron {
         /**
          * @brief Copy a CUDA device BGRA frame to the swapchain and present.
          *
-         * Waits for the current frame's fence, copies device_bgra into the
-         * CUDA-imported staging buffer, synchronizes the stream, then submits
-         * a Vulkan buffer-to-image copy and queue present.
+         * Waits for the current frame's fence, enqueues async copy of device_bgra
+         * into the CUDA-imported staging buffer, signals an external semaphore from
+         * CUDA, then submits a Vulkan buffer-to-image copy that waits on the
+         * semaphore (GPU-side sync only, no CPU blocking).
          *
          * @param [in] device_bgra  Device pointer to BGRA frame (width*height*4 bytes).
          * @param [in] width        Frame width in pixels.
@@ -131,17 +132,20 @@ namespace bytron {
             VkFence         fence           = VK_NULL_HANDLE;  ///< Signals when GPU finishes this frame's work.
             VkSemaphore     image_available = VK_NULL_HANDLE;  ///< Signals when swapchain image is acquired.
             VkSemaphore     render_finished = VK_NULL_HANDLE;  ///< Signals when copy command completes.
+            VkSemaphore     cuda_ready      = VK_NULL_HANDLE;  ///< Signaled by CUDA after staging write (full-frame mode).
         };
         FrameResources frames_[FRAMES_IN_FLIGHT]{};
         int current_frame_ = 0;  ///< Alternates 0/1 for double-buffered submission.
+        bool pending_cuda_signal_ = false;  ///< True when CUDA has signaled cuda_ready for current frame.
 
         VkBuffer       staging_buf_ = VK_NULL_HANDLE;   ///< Staging buffer for swapchain copy source.
         VkDeviceMemory staging_mem_ = VK_NULL_HANDLE;    ///< Backing memory (device-local or host-visible).
         VkDeviceSize   staging_size_ = 0;                ///< Buffer size in bytes (width * height * 4).
 
-        cudaExternalMemory_t cuda_ext_mem_     = nullptr;  ///< CUDA handle to imported Vulkan memory (full-frame mode).
-        void*                cuda_staging_ptr_ = nullptr;  ///< CUDA device pointer mapped from ext_mem (full-frame mode).
-        void*                staging_mapped_ptr_ = nullptr;  ///< Host pointer from vkMapMemory (overlay mode).
+        cudaExternalMemory_t    cuda_ext_mem_     = nullptr;  ///< CUDA handle to imported Vulkan memory (full-frame mode).
+        void*                   cuda_staging_ptr_ = nullptr;  ///< CUDA device pointer mapped from ext_mem (full-frame mode).
+        void*                   staging_mapped_ptr_ = nullptr;  ///< Host pointer from vkMapMemory (overlay mode).
+        cudaExternalSemaphore_t cuda_ext_sem_[FRAMES_IN_FLIGHT]{};  ///< CUDA handles for imported Vulkan semaphores.
 
         int capture_w_;  ///< Capture / display width in pixels.
         int capture_h_;  ///< Capture / display height in pixels.

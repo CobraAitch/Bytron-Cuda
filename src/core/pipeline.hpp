@@ -21,6 +21,7 @@
 #include <memory>
 #include <stop_token>
 #include <thread>
+#include <unordered_map>
 
 namespace bytron {
 
@@ -114,17 +115,6 @@ namespace bytron {
          */
         void inference_loop(std::stop_token stoken, OutputSink& sink);
 
-        /** @brief Replay a previously captured CUDA graph for a slot. */
-        void enqueue_graph(PipelineSlot& slot);
-
-        /**
-         * @brief Capture the preprocess → TRT → D2H sequence as a CUDA graph.
-         *
-         * Uses cudaStreamCaptureModeGlobal so TRT internal streams are included.
-         * Called once after warm-up, and again if capture resolution changes.
-         */
-        void capture_graph(PipelineSlot& slot, int src_w, int src_h);
-
         /**
          * @brief Postprocess TRT output and deliver to the output sink.
          *
@@ -149,15 +139,46 @@ namespace bytron {
         std::jthread capture_thread_;    ///< Runs capture_loop().
         std::jthread inference_thread_;  ///< Runs inference_loop().
 
-        /** @brief Per-slot CUDA graph state for replay-based inference. */
+        /** @brief Per-resolution CUDA graph state for replay-based inference. */
         struct GraphState {
-            cudaGraph_t     graph      = nullptr;  ///< Captured graph (preprocess + TRT + D2H copy).
-            cudaGraphExec_t exec       = nullptr;  ///< Instantiated executable graph.
-            bool            captured   = false;     ///< True after first successful capture.
-            int             captured_w = 0;         ///< Source width at capture time.
-            int             captured_h = 0;         ///< Source height at capture time.
+            cudaGraph_t     graph    = nullptr;  ///< Captured graph (preprocess + TRT + D2H copy).
+            cudaGraphExec_t exec     = nullptr;  ///< Instantiated executable graph.
+
+            ~GraphState() { destroy(); }
+            GraphState() = default;
+            GraphState(GraphState&& o) noexcept
+                : graph(std::exchange(o.graph, nullptr))
+                , exec(std::exchange(o.exec, nullptr)) {}
+            GraphState& operator=(GraphState&& o) noexcept {
+                if (this != &o) { destroy(); graph = std::exchange(o.graph, nullptr); exec = std::exchange(o.exec, nullptr); }
+                return *this;
+            }
+            GraphState(const GraphState&) = delete;
+            GraphState& operator=(const GraphState&) = delete;
+        private:
+            void destroy() noexcept {
+                if (exec)  { cudaGraphExecDestroy(exec);  exec  = nullptr; }
+                if (graph) { cudaGraphDestroy(graph);      graph = nullptr; }
+            }
         };
-        std::vector<GraphState> graph_state_;
+
+        static constexpr int MAX_CACHED_GRAPHS = 4;  ///< Max cached resolutions per slot.
+
+        /** @brief Pack (w, h) into a 64-bit key for graph cache lookup. */
+        static std::uint64_t res_key(int w, int h) noexcept {
+            return (static_cast<std::uint64_t>(w) << 32) | static_cast<std::uint32_t>(h);
+        }
+
+        /**
+         * @brief Capture the preprocess → TRT → D2H sequence as a CUDA graph.
+         *
+         * Uses cudaStreamCaptureModeGlobal so TRT internal streams are included.
+         * Called once after warm-up, and again on resolution cache miss.
+         */
+        void capture_graph(PipelineSlot& slot, int src_w, int src_h, GraphState& gs);
+
+        /// Per-slot map from resolution key → cached graph.
+        std::vector<std::unique_ptr<std::unordered_map<std::uint64_t, GraphState>>> graph_cache_;
         bool use_cuda_graphs_ = false;   ///< From config; enables graph capture after warm-up.
 
         std::vector<bool> slot_warmed_up_;  ///< Per-slot: true after first eager execution pass.

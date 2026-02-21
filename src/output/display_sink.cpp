@@ -9,6 +9,7 @@
 
 #include <spdlog/spdlog.h>
 #include <cstdint>
+#include <cstring>
 
 namespace bytron {
 
@@ -23,8 +24,9 @@ namespace bytron {
         auto det_bytes   = std::size_t(max_detections) * sizeof(Detection);
 
         for (auto& mb : mailbox_) {
-            mb.frame_buf = CudaDeviceBuffer(frame_bytes);
-            mb.det_buf   = CudaDeviceBuffer(det_bytes);
+            mb.frame_buf   = CudaDeviceBuffer(frame_bytes);
+            mb.det_buf     = CudaDeviceBuffer(det_bytes);
+            mb.det_pinned  = CudaPinnedBuffer(det_bytes);
         }
 
         display_thread_ = std::jthread([this](std::stop_token st) { display_loop(st); });
@@ -56,8 +58,13 @@ namespace bytron {
         mb.width          = width;
         mb.height         = height;
         mb.pitch          = width * 4;
-        mb.detections     = ctx.detections;
         mb.num_detections = static_cast<int>(ctx.detections.size());
+
+        // Copy detections into pinned memory for truly async H2D transfer later.
+        if (mb.num_detections > 0) {
+            std::memcpy(mb.det_pinned.ptr(), ctx.detections.data(),
+                        mb.num_detections * sizeof(Detection));
+        }
 
         {
             std::lock_guard lock(mtx_);
@@ -101,12 +108,15 @@ namespace bytron {
             }
 
             auto& mb = mailbox_[slot_idx];
-            mb.copy_done.synchronize();
-
             auto os = overlay_stream_.get();
+
+            // GPU-side wait: overlay_stream waits for copy_stream's D2D frame copy
+            // to complete, without blocking the CPU.
+            CUDA_CHECK(cudaStreamWaitEvent(os, mb.copy_done.get(), 0));
+
             if (mb.num_detections > 0) {
                 auto det_bytes = mb.num_detections * sizeof(Detection);
-                CUDA_CHECK(cudaMemcpyAsync(mb.det_buf.ptr(), mb.detections.data(),
+                CUDA_CHECK(cudaMemcpyAsync(mb.det_buf.ptr(), mb.det_pinned.ptr(),
                                             det_bytes, cudaMemcpyHostToDevice, os));
 
                 launch_draw_detection_boxes(

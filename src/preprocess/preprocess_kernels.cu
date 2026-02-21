@@ -11,7 +11,7 @@ namespace bytron {
         const std::uint8_t* __restrict__ src,
         float*              __restrict__ dst,
         int src_w, int src_h, int src_pitch,
-        int dst_w, int dst_h,
+        int dst_w, int dst_h, int plane_size,
         float scale, int pad_x, int pad_y, int new_w, int new_h
     ) {
         const int dx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -21,6 +21,7 @@ namespace bytron {
         constexpr float pad_val = 114.0f / 255.0f;
         const int rx = dx - pad_x;
         const int ry = dy - pad_y;
+        const int dst_idx = dy * dst_w + dx;
 
         if (rx >= 0 && rx < new_w && ry >= 0 && ry < new_h) {
             const float sx = (static_cast<float>(rx) + 0.5f) / scale - 0.5f;
@@ -35,32 +36,40 @@ namespace bytron {
             const int cx0 = max(0, x0);
             const int cy0 = max(0, y0);
 
-            const int plane_size = dst_h * dst_w;
+            // Load 4 BGRA pixels as uint32_t via read-only texture cache.
+            const auto* src32 = reinterpret_cast<const unsigned int*>(src);
+            const int pitch32 = src_pitch >> 2;
+            const unsigned int p00 = __ldg(&src32[cy0 * pitch32 + cx0]);
+            const unsigned int p01 = __ldg(&src32[cy0 * pitch32 + x1]);
+            const unsigned int p10 = __ldg(&src32[y1  * pitch32 + cx0]);
+            const unsigned int p11 = __ldg(&src32[y1  * pitch32 + x1]);
+
+            // Precompute bilinear weights once (shared across all 3 channels).
+            const float w00 = (1.0f - fx) * (1.0f - fy);
+            const float w01 = fx * (1.0f - fy);
+            const float w10 = (1.0f - fx) * fy;
+            const float w11 = fx * fy;
+
+            constexpr float inv255 = 1.0f / 255.0f;
 
             #pragma unroll
             for (int c = 0; c < 3; ++c) {
-                // BGRA-to-RGB: output channel c reads source channel (2-c).
-                // c=0(R)->sc=2(B byte), c=1(G)->sc=1(G byte), c=2(B)->sc=0(R byte).
-                const int sc = 2 - c;
-                const float v00 = static_cast<float>(src[cy0 * src_pitch + cx0 * 4 + sc]);
-                const float v01 = static_cast<float>(src[cy0 * src_pitch + x1  * 4 + sc]);
-                const float v10 = static_cast<float>(src[y1  * src_pitch + cx0 * 4 + sc]);
-                const float v11 = static_cast<float>(src[y1  * src_pitch + x1  * 4 + sc]);
+                // BGRA-to-RGB: c=0(R)->shift 16, c=1(G)->shift 8, c=2(B)->shift 0.
+                const int shift = (2 - c) * 8;
+                const float v00 = static_cast<float>((p00 >> shift) & 0xFFu);
+                const float v01 = static_cast<float>((p01 >> shift) & 0xFFu);
+                const float v10 = static_cast<float>((p10 >> shift) & 0xFFu);
+                const float v11 = static_cast<float>((p11 >> shift) & 0xFFu);
 
-                const float val = v00 * (1.0f - fx) * (1.0f - fy)
-                                + v01 * fx * (1.0f - fy)
-                                + v10 * (1.0f - fx) * fy
-                                + v11 * fx * fy;
-
-                dst[c * plane_size + dy * dst_w + dx] = val / 255.0f;
+                dst[c * plane_size + dst_idx] =
+                    (v00 * w00 + v01 * w01 + v10 * w10 + v11 * w11) * inv255;
             }
             return;
         }
 
-        const int plane_size = dst_h * dst_w;
-        dst[0 * plane_size + dy * dst_w + dx] = pad_val;
-        dst[1 * plane_size + dy * dst_w + dx] = pad_val;
-        dst[2 * plane_size + dy * dst_w + dx] = pad_val;
+        dst[0 * plane_size + dst_idx] = pad_val;
+        dst[1 * plane_size + dst_idx] = pad_val;
+        dst[2 * plane_size + dst_idx] = pad_val;
     }
 
     void launch_fused_preprocess_bgra(
@@ -71,11 +80,12 @@ namespace bytron {
     ) {
         auto params = compute_letterbox(src_w, src_h, dst_w, dst_h);
 
-        dim3 block(32, 32);
-        dim3 grid((dst_w + 31) / 32, (dst_h + 31) / 32);
+        dim3 block(32, 8);
+        dim3 grid((dst_w + 31) / 32, (dst_h + 7) / 8);
 
         fused_preprocess_kernel_bgra<<<grid, block, 0, stream>>>(
             src, dst, src_w, src_h, src_pitch, dst_w, dst_h,
+            dst_h * dst_w,
             params.scale, params.pad_x, params.pad_y, params.new_w, params.new_h);
     }
 

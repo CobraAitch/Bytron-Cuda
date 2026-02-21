@@ -135,6 +135,7 @@ namespace bytron {
                 spdlog::warn("INT8 requested but no calibration dir -- falling back to FP16");
             } else {
                 builder_config->setFlag(nvinfer1::BuilderFlag::kINT8);
+                builder_config->setFlag(nvinfer1::BuilderFlag::kOBEY_PRECISION_CONSTRAINTS);
                 calibrator = std::make_unique<Int8EntropyCalibrator>(
                     config.calibration_data_dir, config.calibration_batch_size,
                     static_cast<int>(dims.d[3]), static_cast<int>(dims.d[2]),

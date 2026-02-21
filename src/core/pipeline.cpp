@@ -30,8 +30,8 @@ namespace bytron {
             .precision              = cfg_.precision,
             .max_batch_size         = 1,
             .opt_batch_size         = 1,
-            .max_workspace_bytes    = 1ULL << 30,
-            .max_aux_streams        = 4,
+            .max_workspace_bytes    = cfg_.max_workspace_bytes,
+            .max_aux_streams        = cfg_.max_aux_streams,
             .calibration_data_dir   = cfg_.calibration_images_dir,
             .calibration_batch_size = cfg_.calibration_batch_size,
         };
@@ -54,7 +54,9 @@ namespace bytron {
 
         capture_mailbox_.allocate(cfg_.max_frame_width, cfg_.max_frame_height);
 
-        graph_state_.resize(num_slots_);
+        graph_cache_.reserve(num_slots_);
+        for (int i = 0; i < num_slots_; ++i)
+            graph_cache_.push_back(std::make_unique<std::unordered_map<std::uint64_t, GraphState>>());
         slot_warmed_up_.resize(num_slots_, false);
         timing_.resize(num_slots_);
 
@@ -68,11 +70,7 @@ namespace bytron {
         stop();
         capture_thread_   = {};
         inference_thread_ = {};
-
-        for (auto& gs : graph_state_) {
-            if (gs.exec)  cudaGraphExecDestroy(gs.exec);
-            if (gs.graph) cudaGraphDestroy(gs.graph);
-        }
+        // GraphState destructors handle cudaGraphDestroy / cudaGraphExecDestroy via RAII.
     }
 
     void Pipeline::run(OutputSink& sink) {
@@ -217,13 +215,22 @@ namespace bytron {
             slot.frame_ctx.frame_id   = frame_counter_++;
             slot.frame_ctx.slot_index = idx;
 
-            if (use_cuda_graphs_ && slot_warmed_up_[idx]) {
-                auto& gs = graph_state_[idx];
+            auto key = res_key(w, h);
 
-                if (!gs.captured || gs.captured_w != w || gs.captured_h != h) {
-                    capture_graph(slot, w, h);
-                    spdlog::debug("CUDA graph re-captured for slot {} ({}x{} -> {}x{})",
-                                  idx, gs.captured_w, gs.captured_h, w, h);
+            if (use_cuda_graphs_ && slot_warmed_up_[idx]) {
+                auto& cache = *graph_cache_[idx];
+                auto it = cache.find(key);
+
+                if (it == cache.end()) {
+                    // Cache miss: capture a new graph for this resolution.
+                    if (static_cast<int>(cache.size()) >= MAX_CACHED_GRAPHS)
+                        cache.clear();  // Evict all on overflow (simple policy).
+
+                    auto& gs = cache[key];
+                    capture_graph(slot, w, h, gs);
+                    spdlog::debug("CUDA graph captured for slot {} ({}x{}), cache size {}",
+                                  idx, w, h, cache.size());
+                    it = cache.find(key);
                 }
 
                 auto params = compute_letterbox(w, h, engine_->model_width(), engine_->model_height());
@@ -233,7 +240,7 @@ namespace bytron {
                 slot.frame_ctx.pad_x = static_cast<float>(params.pad_x);
                 slot.frame_ctx.pad_y = static_cast<float>(params.pad_y);
 
-                enqueue_graph(slot);
+                CUDA_CHECK(cudaGraphLaunch(it->second.exec, stream));
             } else {
                 preprocessor_->preprocess_bgra(
                     slot.raw_buffer, w, h, w * 4,
@@ -256,7 +263,8 @@ namespace bytron {
                 if (use_cuda_graphs_ && !slot_warmed_up_[idx]) {
                     CUDA_CHECK(cudaStreamSynchronize(stream));
                     slot_warmed_up_[idx] = true;
-                    capture_graph(slot, w, h);
+                    auto& gs = (*graph_cache_[idx])[key];
+                    capture_graph(slot, w, h, gs);
                     spdlog::debug("CUDA graph captured for slot {} ({}x{})", idx, w, h);
                 }
             }
@@ -291,13 +299,8 @@ namespace bytron {
                      final_frames > 0 ? total_latency_ms_.load() / final_frames : 0.0);
     }
 
-    void Pipeline::capture_graph(PipelineSlot& slot, int src_w, int src_h) {
+    void Pipeline::capture_graph(PipelineSlot& slot, int src_w, int src_h, GraphState& gs) {
         auto stream = slot.stream.get();
-        int idx = slot.index;
-        auto& gs = graph_state_[idx];
-
-        if (gs.exec)  { cudaGraphExecDestroy(gs.exec);  gs.exec  = nullptr; }
-        if (gs.graph) { cudaGraphDestroy(gs.graph);      gs.graph = nullptr; }
 
         auto& ctx = slot.trt_context;
         ctx->setInputShape(engine_->input_name(),
@@ -321,7 +324,7 @@ namespace bytron {
             // Abort graph capture before throwing to leave the stream in a valid state.
             cudaStreamEndCapture(stream, &gs.graph);
             throw std::runtime_error("TRT enqueueV3 failed during graph capture on slot "
-                                     + std::to_string(idx));
+                                     + std::to_string(slot.index));
         }
 
         auto output_bytes = std::size_t(engine_->max_detections()) * 6 * sizeof(float);
@@ -330,14 +333,6 @@ namespace bytron {
 
         CUDA_CHECK(cudaStreamEndCapture(stream, &gs.graph));
         CUDA_CHECK(cudaGraphInstantiate(&gs.exec, gs.graph, 0));
-
-        gs.captured   = true;
-        gs.captured_w = src_w;
-        gs.captured_h = src_h;
-    }
-
-    void Pipeline::enqueue_graph(PipelineSlot& slot) {
-        CUDA_CHECK(cudaGraphLaunch(graph_state_[slot.index].exec, slot.stream.get()));
     }
 
     void Pipeline::harvest_and_deliver(PipelineSlot& slot, OutputSink& sink) {
