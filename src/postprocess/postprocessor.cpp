@@ -1,6 +1,6 @@
 /**
  * @file postprocessor.cpp
- * @brief YOLOv26 confidence filtering and inverse-letterbox coordinate transform.
+ * @brief Schema-driven confidence filtering and inverse-letterbox coordinate transform.
  */
 
 #include "postprocess/postprocessor.hpp"
@@ -10,10 +10,11 @@
 namespace bytron {
 
     Postprocessor::Postprocessor(float conf_threshold, int max_detections,
-                                 int stride) noexcept
+                                 int stride, DetectionSchema schema) noexcept
         : conf_threshold_(conf_threshold)
         , max_detections_(max_detections)
-        , stride_(stride) {}
+        , stride_(stride)
+        , schema_(schema) {}
 
     void Postprocessor::process(std::span<const float> output_host, FrameContext& ctx) {
         ctx.detections.clear();
@@ -23,18 +24,18 @@ namespace bytron {
 
         for (int i = 0; i < max_detections_; ++i) {
             const float* det = output_host.data() + i * stride_;
-            if (det[4] < conf_threshold_) continue;
+            if (det[schema_.confidence_idx] < conf_threshold_) continue;
 
             // Inverse letterbox: subtract padding, divide by scale, clamp to frame bounds.
             ctx.detections.push_back(Detection{
                 .box = BBox{
-                    std::clamp((det[0] - ctx.pad_x) / ctx.scale, 0.0f, w),
-                    std::clamp((det[1] - ctx.pad_y) / ctx.scale, 0.0f, h),
-                    std::clamp((det[2] - ctx.pad_x) / ctx.scale, 0.0f, w),
-                    std::clamp((det[3] - ctx.pad_y) / ctx.scale, 0.0f, h),
+                    std::clamp((det[schema_.x1_idx] - ctx.pad_x) / ctx.scale, 0.0f, w),
+                    std::clamp((det[schema_.y1_idx] - ctx.pad_y) / ctx.scale, 0.0f, h),
+                    std::clamp((det[schema_.x2_idx] - ctx.pad_x) / ctx.scale, 0.0f, w),
+                    std::clamp((det[schema_.y2_idx] - ctx.pad_y) / ctx.scale, 0.0f, h),
                 },
-                .confidence = det[4],
-                .class_id   = static_cast<int>(det[5])
+                .confidence = det[schema_.confidence_idx],
+                .class_id   = static_cast<int>(det[schema_.class_id_idx])
             });
         }
     }

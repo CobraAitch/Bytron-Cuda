@@ -12,13 +12,26 @@
 
 #include <spdlog/spdlog.h>
 #include <iostream>
-#include <csignal>
 #include <memory>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 
 static std::unique_ptr<bytron::Pipeline> g_pipeline;
 
-static void signal_handler(int /*sig*/) {
-    if (g_pipeline) g_pipeline->stop();
+/**
+ * @brief Windows console control handler for graceful shutdown.
+ *
+ * Unlike std::signal, SetConsoleCtrlHandler callbacks are invoked on a
+ * dedicated OS thread, making it safe to call Pipeline::stop() which
+ * touches atomics and condition variables.
+ */
+static BOOL WINAPI console_handler(DWORD event) {
+    if (event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT || event == CTRL_CLOSE_EVENT) {
+        if (g_pipeline) g_pipeline->stop();
+        return TRUE;
+    }
+    return FALSE;
 }
 
 static void print_usage() {
@@ -72,8 +85,7 @@ int main(int argc, char** argv) {
 
         g_pipeline = std::make_unique<bytron::Pipeline>(cfg);
 
-        std::signal(SIGINT, signal_handler);
-        std::signal(SIGTERM, signal_handler);
+        SetConsoleCtrlHandler(console_handler, TRUE);
 
         // Sink priority: overlay (transparent, capture-excluded) > full-frame
         // display (Vulkan CUDA interop) > headless callback (metadata only).
@@ -92,8 +104,14 @@ int main(int argc, char** argv) {
         }
 
         auto m = g_pipeline->metrics();
-        spdlog::info("Final: {} frames processed, {:.2f} ms avg latency",
-                     m.total_frames, m.avg_latency_ms);
+        if (m.eager_frames > 0) {
+            spdlog::info("Final: {} frames, {:.2f} ms avg [pre {:.2f} | trt {:.2f} | d2h {:.2f}]",
+                         m.total_frames, m.avg_latency_ms,
+                         m.avg_preprocess_ms, m.avg_trt_ms, m.avg_d2h_ms);
+        } else {
+            spdlog::info("Final: {} frames processed, {:.2f} ms avg latency",
+                         m.total_frames, m.avg_latency_ms);
+        }
 
     } catch (const std::exception& e) {
         spdlog::error("Fatal: {}", e.what());

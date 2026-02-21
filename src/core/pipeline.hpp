@@ -33,9 +33,9 @@ namespace bytron {
      *  - **Capture thread** acquires DXGI frames into a triple-buffered
      *    CaptureMailbox (BGRA, GPU-resident, zero CPU copies).
      *  - **Inference thread** cycles through N PipelineSlots, each with its own
-     *    CUDA stream and TRT execution context: copy captured frame → fused
-     *    preprocess → TRT enqueue → D2H output copy → postprocess → deliver
-     *    to OutputSink.
+     *    high-priority CUDA stream and TRT execution context: copy captured frame
+     *    → fused preprocess → TRT enqueue → D2H output copy → postprocess →
+     *    deliver to OutputSink.
      *
      * Optionally captures a CUDA graph per slot after a warm-up pass, replaying
      * the graph on subsequent frames for reduced launch overhead. Graphs are
@@ -87,10 +87,19 @@ namespace bytron {
          */
         void stop() noexcept;
 
-        /** @brief Accumulated pipeline performance counters. */
+        /**
+         * @brief Accumulated pipeline performance counters with per-stage breakdown.
+         *
+         * Per-stage averages are only available for eager-mode frames (not CUDA
+         * graph replays, where stages are fused into a single launch).
+         */
         struct Metrics {
-            double        avg_latency_ms = 0.0;  ///< Mean GPU latency per frame (ms).
-            std::uint64_t total_frames   = 0;     ///< Number of frames fully processed.
+            double        avg_latency_ms    = 0.0;  ///< Mean total GPU latency per frame (ms).
+            double        avg_preprocess_ms = 0.0;  ///< Mean preprocess kernel time (ms, eager only).
+            double        avg_trt_ms        = 0.0;  ///< Mean TRT enqueue time (ms, eager only).
+            double        avg_d2h_ms        = 0.0;  ///< Mean D2H output copy time (ms, eager only).
+            std::uint64_t total_frames      = 0;    ///< Number of frames fully processed.
+            std::uint64_t eager_frames      = 0;    ///< Frames with per-stage breakdown available.
         };
 
         [[nodiscard]] Metrics metrics()        const noexcept;
@@ -183,16 +192,29 @@ namespace bytron {
 
         std::vector<bool> slot_warmed_up_;  ///< Per-slot: true after first eager execution pass.
 
-        std::atomic<std::uint64_t> frame_counter_{0};    ///< Monotonic frame ID generator.
-        std::atomic<double>        total_latency_ms_{0.0};  ///< Accumulated GPU latency for averaging.
-        std::atomic<std::uint64_t> completed_frames_{0};    ///< Frames fully processed (through postprocess).
+        std::atomic<std::uint64_t> frame_counter_{0};      ///< Monotonic frame ID generator.
+        std::atomic<std::uint64_t> total_latency_us_{0};   ///< Accumulated total GPU latency (microseconds, lock-free).
+        std::atomic<std::uint64_t> preprocess_us_{0};      ///< Accumulated preprocess time (microseconds, eager only).
+        std::atomic<std::uint64_t> trt_us_{0};             ///< Accumulated TRT enqueue time (microseconds, eager only).
+        std::atomic<std::uint64_t> d2h_us_{0};             ///< Accumulated D2H copy time (microseconds, eager only).
+        std::atomic<std::uint64_t> completed_frames_{0};   ///< Frames fully processed (through postprocess).
+        std::atomic<std::uint64_t> eager_frames_{0};       ///< Eager-mode frames with per-stage timing.
 
-        /** @brief Per-slot CUDA event pair for GPU-side latency measurement. */
+        /**
+         * @brief Per-slot CUDA events for GPU-side latency measurement.
+         *
+         * In eager mode, all four events are recorded per frame for per-stage
+         * breakdown. In graph replay mode, only start and end are valid.
+         */
         struct SlotTiming {
-            CudaEvent start{true};  ///< Recorded before preprocess. Timing-enabled.
-            CudaEvent end{true};    ///< Recorded after output copy. Timing-enabled.
+            CudaEvent start{true};           ///< Recorded before preprocess. Timing-enabled.
+            CudaEvent preprocess_done{true}; ///< Recorded after preprocess, before TRT. Eager only.
+            CudaEvent trt_done{true};        ///< Recorded after TRT enqueue, before D2H. Eager only.
+            CudaEvent end{true};             ///< Recorded after D2H output copy. Timing-enabled.
         };
         std::vector<SlotTiming> timing_;
+
+        std::vector<bool> slot_eager_exec_;  ///< Per-slot: true if last execution was eager (per-stage events valid).
     };
 
 }

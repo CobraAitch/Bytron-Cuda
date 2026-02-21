@@ -1,6 +1,6 @@
 /**
  * @file cuda_stream.hpp
- * @brief RAII wrapper for a CUDA stream.
+ * @brief RAII wrapper for a CUDA stream with optional priority scheduling.
  */
 
 #pragma once
@@ -12,18 +12,36 @@
 namespace bytron {
 
     /**
+     * @brief CUDA stream priority levels for GPU work scheduling.
+     *
+     * Maps to the device's priority range via cudaDeviceGetStreamPriorityRange.
+     * High-priority streams preempt lower-priority work when resources are
+     * contended, reducing latency on the critical inference path.
+     */
+    enum class StreamPriority { High, Normal, Low };
+
+    /**
      * @brief Move-only RAII CUDA stream, created with cudaStreamNonBlocking.
      *
      * Non-blocking mode prevents implicit synchronization with the default
      * stream, which is critical for pipeline parallelism across multiple slots.
+     * An optional StreamPriority allows inference streams to preempt display
+     * work on the same GPU.
      *
      * @note Thread safety: The CUDA stream handle can be used from any CPU
      *       thread; CUDA serializes operations on the same stream.
      */
     class CudaStream {
     public:
-        CudaStream() {
-            CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
+        explicit CudaStream(StreamPriority priority = StreamPriority::Normal) {
+            if (priority == StreamPriority::Normal) {
+                CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
+            } else {
+                int lo = 0, hi = 0;  // lo = lowest priority (largest value), hi = highest (smallest)
+                CUDA_CHECK(cudaDeviceGetStreamPriorityRange(&lo, &hi));
+                int p = (priority == StreamPriority::High) ? hi : lo;
+                CUDA_CHECK(cudaStreamCreateWithPriority(&stream_, cudaStreamNonBlocking, p));
+            }
         }
 
         ~CudaStream() {

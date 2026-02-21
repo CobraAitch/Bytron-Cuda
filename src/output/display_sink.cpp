@@ -19,6 +19,8 @@ namespace bytron {
         : capture_w_(capture_w)
         , capture_h_(capture_h)
         , window_name_(window_name)
+        , copy_stream_(StreamPriority::Low)
+        , overlay_stream_(StreamPriority::Low)
     {
         auto frame_bytes = std::size_t(capture_w) * capture_h * 4;
         auto det_bytes   = std::size_t(max_detections) * sizeof(Detection);

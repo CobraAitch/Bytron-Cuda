@@ -51,6 +51,16 @@ namespace bytron {
         if (j.contains("display"))                cfg.display                = j["display"];
         if (j.contains("overlay"))                cfg.overlay                = j["overlay"];
 
+        if (j.contains("detection_schema")) {
+            auto& s = j["detection_schema"];
+            if (s.contains("x1_idx"))         cfg.detection_schema.x1_idx         = s["x1_idx"];
+            if (s.contains("y1_idx"))         cfg.detection_schema.y1_idx         = s["y1_idx"];
+            if (s.contains("x2_idx"))         cfg.detection_schema.x2_idx         = s["x2_idx"];
+            if (s.contains("y2_idx"))         cfg.detection_schema.y2_idx         = s["y2_idx"];
+            if (s.contains("confidence_idx")) cfg.detection_schema.confidence_idx = s["confidence_idx"];
+            if (s.contains("class_id_idx"))   cfg.detection_schema.class_id_idx   = s["class_id_idx"];
+        }
+
         return cfg;
     }
 

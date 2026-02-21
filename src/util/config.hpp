@@ -60,6 +60,8 @@ namespace bytron {
         bool display = true;   ///< Enable visual display output
         bool overlay = true;   ///< Use transparent overlay (true) vs full-frame Vulkan window (false)
 
+        DetectionSchema detection_schema;  ///< Output tensor field mapping (default: YOLOv26 layout)
+
         /**
          * @brief Compute the engine cache file path from onnx_path and precision.
          * @return Path like "models/yolov26s_fp16.engine".

@@ -42,11 +42,12 @@ namespace bytron {
 
         postprocessor_ = std::make_unique<Postprocessor>(
             cfg_.confidence_threshold, engine_->max_detections(),
-            engine_->output_stride());
+            engine_->output_stride(), cfg_.detection_schema);
 
         slots_.resize(num_slots_);
         for (int i = 0; i < num_slots_; ++i) {
-            slots_[i].index = i;
+            slots_[i].index  = i;
+            slots_[i].stream = CudaStream(StreamPriority::High);
             slots_[i].allocate(cfg_.max_frame_width, cfg_.max_frame_height,
                                engine_->model_width(), engine_->model_height(),
                                engine_->max_detections(), engine_->output_stride());
@@ -59,10 +60,12 @@ namespace bytron {
         for (int i = 0; i < num_slots_; ++i)
             graph_cache_.push_back(std::make_unique<std::unordered_map<std::uint64_t, GraphState>>());
         slot_warmed_up_.resize(num_slots_, false);
+        slot_eager_exec_.resize(num_slots_, true);
         timing_.resize(num_slots_);
 
         spdlog::info("Pipeline initialized: {} slots, model {}x{}, max {} detections, "
-                     "CUDA graphs: {}, desktop BGRA capture, three-thread architecture",
+                     "CUDA graphs: {}, stream priorities: HIGH(inference)/NORMAL(capture), "
+                     "desktop BGRA capture, three-thread architecture",
                      num_slots_, engine_->model_width(), engine_->model_height(),
                      engine_->max_detections(), use_cuda_graphs_ ? "ON" : "OFF");
     }
@@ -77,7 +80,11 @@ namespace bytron {
     void Pipeline::run(OutputSink& sink) {
         frame_counter_    = 0;
         completed_frames_ = 0;
-        total_latency_ms_ = 0.0;
+        eager_frames_     = 0;
+        total_latency_us_ = 0;
+        preprocess_us_    = 0;
+        trt_us_           = 0;
+        d2h_us_           = 0;
 
         capture_thread_   = std::jthread([this](std::stop_token st) { capture_loop(st); });
         inference_thread_ = std::jthread(
@@ -184,8 +191,20 @@ namespace bytron {
                 slot.ready_event.synchronize();
 
                 float frame_ms = CudaEvent::elapsed_ms(timing_[idx].start, timing_[idx].end);
-                total_latency_ms_ += frame_ms;
+                total_latency_us_ += static_cast<std::uint64_t>(frame_ms * 1000.0f);
                 ++completed_frames_;
+
+                // Per-stage breakdown is only available for eager-mode frames
+                // (graph replays fuse all stages into a single launch).
+                if (slot_eager_exec_[idx]) {
+                    float pre_ms = CudaEvent::elapsed_ms(timing_[idx].start, timing_[idx].preprocess_done);
+                    float trt_ms = CudaEvent::elapsed_ms(timing_[idx].preprocess_done, timing_[idx].trt_done);
+                    float d2h_ms = CudaEvent::elapsed_ms(timing_[idx].trt_done, timing_[idx].end);
+                    preprocess_us_ += static_cast<std::uint64_t>(pre_ms * 1000.0f);
+                    trt_us_        += static_cast<std::uint64_t>(trt_ms * 1000.0f);
+                    d2h_us_        += static_cast<std::uint64_t>(d2h_ms * 1000.0f);
+                    ++eager_frames_;
+                }
 
                 harvest_and_deliver(slot, sink);
                 slot_in_flight[idx] = false;
@@ -242,10 +261,13 @@ namespace bytron {
                 slot.frame_ctx.pad_y = static_cast<float>(params.pad_y);
 
                 CUDA_CHECK(cudaGraphLaunch(it->second.exec, stream));
+                slot_eager_exec_[idx] = false;
             } else {
                 preprocessor_->preprocess_bgra(
                     slot.raw_buffer, w, h, w * 4,
                     slot.input_buffer, slot.frame_ctx, stream);
+
+                timing_[idx].preprocess_done.record(stream);
 
                 auto& ctx = slot.trt_context;
                 ctx->setInputShape(engine_->input_name(),
@@ -256,8 +278,12 @@ namespace bytron {
                 if (!ctx->enqueueV3(stream))
                     throw std::runtime_error("TRT enqueueV3 failed on slot " + std::to_string(idx));
 
+                timing_[idx].trt_done.record(stream);
+
                 auto output_bytes = std::size_t(engine_->max_detections()) * engine_->output_stride() * sizeof(float);
                 slot.output_buffer.copy_to_host_async(slot.output_pinned.ptr(), output_bytes, stream);
+
+                slot_eager_exec_[idx] = true;
 
                 // Warm-up: run one eager pass before graph capture to let TRT
                 // auto-tune kernels. Sync ensures all work completes before capture.
@@ -277,27 +303,63 @@ namespace bytron {
 
             if (completed_frames_ > 0 && completed_frames_ % 100 == 0) {
                 auto frames = completed_frames_.load();
+                auto eager  = eager_frames_.load();
                 double elapsed = fps_timer.elapsed_ms();
-                spdlog::info("Frames: {}  FPS: {:.1f}  Avg latency: {:.2f} ms",
-                             frames, (frames * 1000.0) / elapsed,
-                             total_latency_ms_.load() / frames);
+                double avg_ms  = total_latency_us_.load() / (frames * 1000.0);
+
+                if (eager > 0) {
+                    spdlog::info("Frames: {}  FPS: {:.1f}  Avg: {:.2f} ms "
+                                 "[pre {:.2f} | trt {:.2f} | d2h {:.2f}]",
+                                 frames, (frames * 1000.0) / elapsed, avg_ms,
+                                 preprocess_us_.load() / (eager * 1000.0),
+                                 trt_us_.load() / (eager * 1000.0),
+                                 d2h_us_.load() / (eager * 1000.0));
+                } else {
+                    spdlog::info("Frames: {}  FPS: {:.1f}  Avg: {:.2f} ms (graph replay)",
+                                 frames, (frames * 1000.0) / elapsed, avg_ms);
+                }
             }
         }
 
+        // Drain in-flight slots.
         for (int i = 0; i < num_slots_; ++i) {
             if (slot_in_flight[i]) {
                 slots_[i].ready_event.synchronize();
-                total_latency_ms_ += CudaEvent::elapsed_ms(timing_[i].start, timing_[i].end);
+
+                float frame_ms = CudaEvent::elapsed_ms(timing_[i].start, timing_[i].end);
+                total_latency_us_ += static_cast<std::uint64_t>(frame_ms * 1000.0f);
+
+                if (slot_eager_exec_[i]) {
+                    float pre_ms = CudaEvent::elapsed_ms(timing_[i].start, timing_[i].preprocess_done);
+                    float trt_ms = CudaEvent::elapsed_ms(timing_[i].preprocess_done, timing_[i].trt_done);
+                    float d2h_ms = CudaEvent::elapsed_ms(timing_[i].trt_done, timing_[i].end);
+                    preprocess_us_ += static_cast<std::uint64_t>(pre_ms * 1000.0f);
+                    trt_us_        += static_cast<std::uint64_t>(trt_ms * 1000.0f);
+                    d2h_us_        += static_cast<std::uint64_t>(d2h_ms * 1000.0f);
+                    ++eager_frames_;
+                }
+
                 ++completed_frames_;
                 harvest_and_deliver(slots_[i], sink);
             }
         }
 
         auto final_frames = completed_frames_.load();
+        auto final_eager  = eager_frames_.load();
         double elapsed = fps_timer.elapsed_ms();
-        spdlog::info("Pipeline finished: {} frames, {:.1f} FPS, {:.2f} ms avg latency",
-                     final_frames, (final_frames * 1000.0) / elapsed,
-                     final_frames > 0 ? total_latency_ms_.load() / final_frames : 0.0);
+        double avg_ms  = final_frames > 0 ? total_latency_us_.load() / (final_frames * 1000.0) : 0.0;
+
+        if (final_eager > 0) {
+            spdlog::info("Pipeline finished: {} frames, {:.1f} FPS, {:.2f} ms avg "
+                         "[pre {:.2f} | trt {:.2f} | d2h {:.2f}]",
+                         final_frames, (final_frames * 1000.0) / elapsed, avg_ms,
+                         preprocess_us_.load() / (final_eager * 1000.0),
+                         trt_us_.load() / (final_eager * 1000.0),
+                         d2h_us_.load() / (final_eager * 1000.0));
+        } else {
+            spdlog::info("Pipeline finished: {} frames, {:.1f} FPS, {:.2f} ms avg latency",
+                         final_frames, (final_frames * 1000.0) / elapsed, avg_ms);
+        }
     }
 
     void Pipeline::capture_graph(PipelineSlot& slot, int src_w, int src_h, GraphState& gs) {
@@ -349,9 +411,14 @@ namespace bytron {
 
     Pipeline::Metrics Pipeline::metrics() const noexcept {
         auto frames = completed_frames_.load();
+        auto eager  = eager_frames_.load();
         return Metrics{
-            .avg_latency_ms = frames > 0 ? total_latency_ms_.load() / frames : 0.0,
-            .total_frames   = frames
+            .avg_latency_ms    = frames > 0 ? total_latency_us_.load() / (frames * 1000.0) : 0.0,
+            .avg_preprocess_ms = eager > 0 ? preprocess_us_.load() / (eager * 1000.0) : 0.0,
+            .avg_trt_ms        = eager > 0 ? trt_us_.load() / (eager * 1000.0) : 0.0,
+            .avg_d2h_ms        = eager > 0 ? d2h_us_.load() / (eager * 1000.0) : 0.0,
+            .total_frames      = frames,
+            .eager_frames      = eager
         };
     }
 

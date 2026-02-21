@@ -10,6 +10,7 @@
 #include <format>
 #include <stdexcept>
 #include <algorithm>
+#include <cstring>
 #include <vector>
 
 #ifdef _WIN32
@@ -143,6 +144,31 @@ namespace bytron {
         create_info.pApplicationInfo        = &app_info;
         create_info.enabledExtensionCount   = static_cast<std::uint32_t>(extensions.size());
         create_info.ppEnabledExtensionNames = extensions.data();
+
+#ifndef NDEBUG
+        // Enable Vulkan validation layer in debug builds for GPU-side error checking.
+        const char* validation_layer = "VK_LAYER_KHRONOS_validation";
+        std::uint32_t layer_count = 0;
+        vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
+        std::vector<VkLayerProperties> available_layers(layer_count);
+        vkEnumerateInstanceLayerProperties(&layer_count, available_layers.data());
+
+        bool validation_available = false;
+        for (const auto& layer : available_layers) {
+            if (std::strcmp(layer.layerName, validation_layer) == 0) {
+                validation_available = true;
+                break;
+            }
+        }
+
+        if (validation_available) {
+            create_info.enabledLayerCount   = 1;
+            create_info.ppEnabledLayerNames = &validation_layer;
+            spdlog::debug("Vulkan validation layer enabled");
+        } else {
+            spdlog::warn("Vulkan validation layer not available — install Vulkan SDK for debug validation");
+        }
+#endif
 
         VK_CHECK(vkCreateInstance(&create_info, nullptr, &instance_));
     }

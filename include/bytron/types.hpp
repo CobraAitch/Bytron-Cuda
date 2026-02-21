@@ -43,4 +43,24 @@ namespace bytron {
         FP16,  ///< Half-precision floating point (default)
         INT8   ///< 8-bit integer quantization (requires calibration data)
     };
+
+    /**
+     * @brief Describes the per-detection field layout in the model output tensor.
+     *
+     * Maps semantic fields (bounding box corners, confidence, class ID) to
+     * indices within each detection's stride in the raw output tensor. This
+     * decouples the postprocessor from any specific model format — change
+     * the schema to support different YOLO variants or custom models without
+     * modifying postprocessor code.
+     *
+     * Default layout matches YOLOv26: [x1, y1, x2, y2, confidence, class_id].
+     */
+    struct DetectionSchema {
+        int x1_idx         = 0;  ///< Index of top-left x coordinate
+        int y1_idx         = 1;  ///< Index of top-left y coordinate
+        int x2_idx         = 2;  ///< Index of bottom-right x coordinate
+        int y2_idx         = 3;  ///< Index of bottom-right y coordinate
+        int confidence_idx = 4;  ///< Index of detection confidence score
+        int class_id_idx   = 5;  ///< Index of class ID
+    };
 }
