@@ -67,6 +67,9 @@ target_include_directories(bytron_lib
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
+# Prevent <windows.h> from defining min/max macros that conflict with std::min/max.
+target_compile_definitions(bytron_lib PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+
 target_link_libraries(bytron_lib
     PUBLIC
         CUDA::cudart
