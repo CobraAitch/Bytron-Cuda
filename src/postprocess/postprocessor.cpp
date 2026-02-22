@@ -6,18 +6,31 @@
 #include "postprocess/postprocessor.hpp"
 
 #include <algorithm>
+#include <stdexcept>
+#include <string>
 
 namespace bytron {
 
     Postprocessor::Postprocessor(float conf_threshold, int max_detections,
-                                 int stride, DetectionSchema schema) noexcept
+                                 int stride, DetectionSchema schema)
         : conf_threshold_(conf_threshold)
         , max_detections_(max_detections)
         , stride_(stride)
-        , schema_(schema) {}
+        , schema_(schema)
+    {
+        int max_idx = std::max({schema_.x1_idx, schema_.y1_idx, schema_.x2_idx,
+                                schema_.y2_idx, schema_.confidence_idx,
+                                schema_.class_id_idx});
+        if (max_idx >= stride_)
+            throw std::runtime_error("DetectionSchema index " + std::to_string(max_idx)
+                                     + " exceeds stride " + std::to_string(stride_));
+    }
 
     void Postprocessor::process(std::span<const float> output_host, FrameContext& ctx) {
         ctx.detections.clear();
+
+        auto required = static_cast<std::size_t>(max_detections_) * stride_;
+        if (output_host.size() < required) return;
 
         auto w = static_cast<float>(ctx.src_width);
         auto h = static_cast<float>(ctx.src_height);

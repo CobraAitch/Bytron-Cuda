@@ -19,6 +19,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <stop_token>
 #include <thread>
 #include <unordered_map>
@@ -95,11 +96,11 @@ namespace bytron {
          */
         struct Metrics {
             double        avg_latency_ms    = 0.0;  ///< Mean total GPU latency per frame (ms).
-            double        avg_preprocess_ms = 0.0;  ///< Mean preprocess kernel time (ms, eager only).
-            double        avg_trt_ms        = 0.0;  ///< Mean TRT enqueue time (ms, eager only).
-            double        avg_d2h_ms        = 0.0;  ///< Mean D2H output copy time (ms, eager only).
+            float         last_pre_ms       = 0.0f; ///< Latest preprocess time from profiling frame (ms).
+            float         last_trt_ms       = 0.0f; ///< Latest TRT inference time from profiling frame (ms).
+            float         last_d2h_ms       = 0.0f; ///< Latest D2H copy time from profiling frame (ms).
             std::uint64_t total_frames      = 0;    ///< Number of frames fully processed.
-            std::uint64_t eager_frames      = 0;    ///< Frames with per-stage breakdown available.
+            std::uint64_t eager_frames      = 0;    ///< Total profiling frames executed.
         };
 
         [[nodiscard]] Metrics metrics()        const noexcept;
@@ -190,15 +191,31 @@ namespace bytron {
         std::vector<std::unique_ptr<std::unordered_map<std::uint64_t, GraphState>>> graph_cache_;
         bool use_cuda_graphs_ = false;   ///< From config; enables graph capture after warm-up.
 
+        /// Per-slot auxiliary CUDA streams for TRT multi-stream graph capture.
+        /// When capturing a CUDA graph, these are forked from the main capture
+        /// stream and passed to TRT via setAuxStreams(), ensuring all TRT kernel
+        /// launches land on streams that are part of the graph.
+        int num_aux_streams_ = 0;
+        std::vector<std::vector<cudaStream_t>> slot_aux_streams_;
+
+        void create_aux_streams();
+        void destroy_aux_streams() noexcept;
+
         std::vector<bool> slot_warmed_up_;  ///< Per-slot: true after first eager execution pass.
 
-        std::atomic<std::uint64_t> frame_counter_{0};      ///< Monotonic frame ID generator.
-        std::atomic<std::uint64_t> total_latency_us_{0};   ///< Accumulated total GPU latency (microseconds, lock-free).
-        std::atomic<std::uint64_t> preprocess_us_{0};      ///< Accumulated preprocess time (microseconds, eager only).
-        std::atomic<std::uint64_t> trt_us_{0};             ///< Accumulated TRT enqueue time (microseconds, eager only).
-        std::atomic<std::uint64_t> d2h_us_{0};             ///< Accumulated D2H copy time (microseconds, eager only).
-        std::atomic<std::uint64_t> completed_frames_{0};   ///< Frames fully processed (through postprocess).
-        std::atomic<std::uint64_t> eager_frames_{0};       ///< Eager-mode frames with per-stage timing.
+        std::uint64_t frame_counter_{0};  ///< Monotonic frame ID generator (inference thread only).
+
+        /// Accumulated metrics protected by metrics_mtx_ for consistent snapshots.
+        mutable std::mutex metrics_mtx_;
+        std::uint64_t total_latency_us_{0};
+        std::uint64_t completed_frames_{0};
+        std::uint64_t eager_frames_{0};
+
+        /// Latest per-stage timings from the most recent eager profiling frame.
+        /// Updated every PROFILE_INTERVAL frames; displayed as-is (not averaged).
+        float last_pre_ms_{0.0f};
+        float last_trt_ms_{0.0f};
+        float last_d2h_ms_{0.0f};
 
         /**
          * @brief Per-slot CUDA events for GPU-side latency measurement.
@@ -215,6 +232,12 @@ namespace bytron {
         std::vector<SlotTiming> timing_;
 
         std::vector<bool> slot_eager_exec_;  ///< Per-slot: true if last execution was eager (per-stage events valid).
+
+        /// Exception propagation from worker threads to run().
+        std::mutex              exception_mtx_;
+        std::exception_ptr      thread_exception_;
+
+        void store_exception(std::exception_ptr ep) noexcept;
     };
 
 }

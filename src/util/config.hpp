@@ -86,5 +86,8 @@ namespace bytron {
          * @throws std::runtime_error On missing argument values.
          */
         void apply_cli(int argc, char** argv);
+
+        /** @brief Validate field ranges. Throws std::runtime_error on invalid values. */
+        void validate() const;
     };
 }

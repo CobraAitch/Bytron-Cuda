@@ -61,7 +61,21 @@ namespace bytron {
             if (s.contains("class_id_idx"))   cfg.detection_schema.class_id_idx   = s["class_id_idx"];
         }
 
+        cfg.validate();
         return cfg;
+    }
+
+    void Config::validate() const {
+        if (num_pipeline_slots < 1 || num_pipeline_slots > 8)
+            throw std::runtime_error(std::format("num_pipeline_slots {} out of range [1, 8]", num_pipeline_slots));
+        if (confidence_threshold < 0.0f || confidence_threshold > 1.0f)
+            throw std::runtime_error(std::format("confidence_threshold {} out of range [0, 1]", confidence_threshold));
+        if (max_detections <= 0)
+            throw std::runtime_error(std::format("max_detections must be > 0, got {}", max_detections));
+        if (max_frame_width <= 0 || max_frame_height <= 0)
+            throw std::runtime_error("max_frame_width and max_frame_height must be > 0");
+        if (calibration_batch_size <= 0)
+            throw std::runtime_error(std::format("calibration_batch_size must be > 0, got {}", calibration_batch_size));
     }
 
     void Config::apply_cli(int argc, char** argv) {

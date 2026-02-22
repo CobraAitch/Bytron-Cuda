@@ -36,7 +36,10 @@ namespace bytron {
         : transparent_(transparent), capture_w_(capture_w), capture_h_(capture_h)
     {
         if (!glfwInit()) {
-            throw std::runtime_error("Failed to initialize GLFW");
+            const char* desc = nullptr;
+            glfwGetError(&desc);
+            throw std::runtime_error(std::format("Failed to initialize GLFW: {}",
+                                                  desc ? desc : "unknown error"));
         }
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -49,7 +52,11 @@ namespace bytron {
 
         window_ = glfwCreateWindow(capture_w, capture_h, title, nullptr, nullptr);
         if (!window_) {
-            throw std::runtime_error("Failed to create GLFW window");
+            const char* desc = nullptr;
+            glfwGetError(&desc);
+            glfwTerminate();
+            throw std::runtime_error(std::format("Failed to create GLFW window: {}",
+                                                  desc ? desc : "unknown error"));
         }
 
         if (transparent_) {
@@ -179,13 +186,13 @@ namespace bytron {
 
     void VulkanDisplay::pick_physical_device() {
         std::uint32_t count = 0;
-        vkEnumeratePhysicalDevices(instance_, &count, nullptr);
+        VK_CHECK(vkEnumeratePhysicalDevices(instance_, &count, nullptr));
         if (count == 0) {
             throw std::runtime_error("No Vulkan physical devices found");
         }
 
         std::vector<VkPhysicalDevice> devices(count);
-        vkEnumeratePhysicalDevices(instance_, &count, devices.data());
+        VK_CHECK(vkEnumeratePhysicalDevices(instance_, &count, devices.data()));
 
         physical_device_ = devices[0];
         for (auto& dev : devices) {
@@ -269,7 +276,7 @@ namespace bytron {
 
     void VulkanDisplay::create_swapchain() {
         VkSurfaceCapabilitiesKHR caps;
-        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device_, surface_, &caps);
+        VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device_, surface_, &caps));
 
         // Determine swapchain extent: use the compositor's current extent if available,
         // otherwise fall back to capture dimensions clamped to device limits.
@@ -286,9 +293,9 @@ namespace bytron {
 
         // Query supported surface formats; prefer B8G8R8A8_UNORM (matches BGRA frame data).
         std::uint32_t format_count = 0;
-        vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_, &format_count, nullptr);
+        VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_, &format_count, nullptr));
         std::vector<VkSurfaceFormatKHR> formats(format_count);
-        vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_, &format_count, formats.data());
+        VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_, &format_count, formats.data()));
 
         swapchain_format_ = formats[0].format;
         VkColorSpaceKHR color_space = formats[0].colorSpace;
@@ -305,11 +312,11 @@ namespace bytron {
             spdlog::warn("B8G8R8A8_UNORM not available; using format {}", static_cast<int>(swapchain_format_));
 
         std::uint32_t present_mode_count = 0;
-        vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device_, surface_,
-                                                   &present_mode_count, nullptr);
+        VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device_, surface_,
+                                                            &present_mode_count, nullptr));
         std::vector<VkPresentModeKHR> present_modes(present_mode_count);
-        vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device_, surface_,
-                                                   &present_mode_count, present_modes.data());
+        VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device_, surface_,
+                                                            &present_mode_count, present_modes.data()));
 
         VkPresentModeKHR chosen_mode = VK_PRESENT_MODE_FIFO_KHR;
         for (auto mode : present_modes) {
@@ -352,9 +359,9 @@ namespace bytron {
 
         VK_CHECK(vkCreateSwapchainKHR(device_, &sc_info, nullptr, &swapchain_));
 
-        vkGetSwapchainImagesKHR(device_, swapchain_, &swapchain_image_count_, nullptr);
+        VK_CHECK(vkGetSwapchainImagesKHR(device_, swapchain_, &swapchain_image_count_, nullptr));
         swapchain_image_count_ = std::min(swapchain_image_count_, MAX_SWAPCHAIN_IMAGES);
-        vkGetSwapchainImagesKHR(device_, swapchain_, &swapchain_image_count_, swapchain_images_);
+        VK_CHECK(vkGetSwapchainImagesKHR(device_, swapchain_, &swapchain_image_count_, swapchain_images_));
 
         const char* alpha_str = "OPAQUE";
         if (composite_alpha == VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR)
@@ -394,7 +401,7 @@ namespace bytron {
     }
 
     void VulkanDisplay::create_staging_buffer() {
-        staging_size_ = static_cast<VkDeviceSize>(capture_w_) * capture_h_ * 4;
+        staging_size_ = static_cast<VkDeviceSize>(capture_w_) * static_cast<VkDeviceSize>(capture_h_) * 4;
 
         if (transparent_) {
             VkBufferCreateInfo buf_info{};
@@ -588,17 +595,21 @@ namespace bytron {
         VkResult result = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
                                                  fr.image_available, VK_NULL_HANDLE,
                                                  &image_index);
-        if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR) {
             recreate_swapchain();
             return;
         }
+        if (result == VK_ERROR_DEVICE_LOST)
+            throw std::runtime_error("Vulkan device lost during vkAcquireNextImageKHR");
+        if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+            VK_CHECK(result);
 
-        vkResetCommandBuffer(fr.cmd, 0);
+        VK_CHECK(vkResetCommandBuffer(fr.cmd, 0));
 
         VkCommandBufferBeginInfo begin_info{};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer(fr.cmd, &begin_info);
+        VK_CHECK(vkBeginCommandBuffer(fr.cmd, &begin_info));
 
         VkImageMemoryBarrier sc_barrier{};
         sc_barrier.sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -637,7 +648,7 @@ namespace bytron {
             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
             0, 0, nullptr, 0, nullptr, 1, &sc_barrier);
 
-        vkEndCommandBuffer(fr.cmd);
+        VK_CHECK(vkEndCommandBuffer(fr.cmd));
 
         VkSemaphore          wait_sems[2]   = { fr.image_available, fr.cuda_ready };
         VkPipelineStageFlags wait_stages[2] = { VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -667,8 +678,11 @@ namespace bytron {
         present_info.pImageIndices      = &image_index;
 
         result = vkQueuePresentKHR(present_queue_, &present_info);
-        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
+            result == VK_ERROR_SURFACE_LOST_KHR) {
             recreate_swapchain();
+        } else if (result == VK_ERROR_DEVICE_LOST) {
+            throw std::runtime_error("Vulkan device lost during vkQueuePresentKHR");
         }
 
         current_frame_ = (current_frame_ + 1) % FRAMES_IN_FLIGHT;

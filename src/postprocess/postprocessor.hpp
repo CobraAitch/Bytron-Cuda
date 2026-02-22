@@ -28,7 +28,7 @@ namespace bytron {
     public:
         Postprocessor(float conf_threshold, int max_detections,
                       int stride = 6,
-                      DetectionSchema schema = {}) noexcept;
+                      DetectionSchema schema = {});
 
         void process(std::span<const float> output_host, FrameContext& ctx);
 

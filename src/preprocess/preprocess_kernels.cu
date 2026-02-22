@@ -4,6 +4,7 @@
  */
 
 #include "preprocess/preprocess_kernels.cuh"
+#include "util/cuda_check.hpp"
 
 namespace bytron {
 
@@ -87,6 +88,7 @@ namespace bytron {
             src, dst, src_w, src_h, src_pitch, dst_w, dst_h,
             dst_h * dst_w,
             params.scale, params.pad_x, params.pad_y, params.new_w, params.new_h);
+        CUDA_CHECK(cudaGetLastError());
     }
 
 }

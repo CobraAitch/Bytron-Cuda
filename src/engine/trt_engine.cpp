@@ -16,6 +16,7 @@
 #include <chrono>
 #include <format>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -188,9 +189,11 @@ namespace bytron {
                 builder_config->getTimingCache()->serialize());
             if (updated) {
                 std::ofstream tc_out(timing_cache_path, std::ios::binary);
-                tc_out.write(static_cast<const char*>(updated->data()), updated->size());
-                spdlog::info("Timing cache saved: {} ({} bytes)",
-                             timing_cache_path.string(), updated->size());
+                if (tc_out.is_open() && tc_out.write(static_cast<const char*>(updated->data()), updated->size()))
+                    spdlog::info("Timing cache saved: {} ({} bytes)",
+                                 timing_cache_path.string(), updated->size());
+                else
+                    spdlog::warn("Failed to write timing cache: {}", timing_cache_path.string());
             }
         }
 
@@ -248,10 +251,16 @@ namespace bytron {
     nvinfer1::Dims TrtEngine::input_dims()  const { return engine_->getTensorShape(input_name_.c_str()); }
     nvinfer1::Dims TrtEngine::output_dims() const { return engine_->getTensorShape(output_name_.c_str()); }
 
-    int TrtEngine::model_width()    const { return static_cast<int>(input_dims().d[3]); }
-    int TrtEngine::model_height()   const { return static_cast<int>(input_dims().d[2]); }
-    int TrtEngine::max_detections() const { return static_cast<int>(output_dims().d[1]); }
-    int TrtEngine::output_stride()  const { return static_cast<int>(output_dims().d[2]); }
+    static int safe_dim_cast(std::int64_t val, const char* name) {
+        if (val < 0 || val > std::numeric_limits<int>::max())
+            throw std::runtime_error(std::format("TRT dimension '{}' value {} out of int range", name, val));
+        return static_cast<int>(val);
+    }
+
+    int TrtEngine::model_width()    const { return safe_dim_cast(input_dims().d[3], "model_width"); }
+    int TrtEngine::model_height()   const { return safe_dim_cast(input_dims().d[2], "model_height"); }
+    int TrtEngine::max_detections() const { return safe_dim_cast(output_dims().d[1], "max_detections"); }
+    int TrtEngine::output_stride()  const { return safe_dim_cast(output_dims().d[2], "output_stride"); }
 
 }
 

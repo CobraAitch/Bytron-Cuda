@@ -107,7 +107,7 @@ int main(int argc, char** argv) {
         if (m.eager_frames > 0) {
             spdlog::info("Final: {} frames, {:.2f} ms avg [pre {:.2f} | trt {:.2f} | d2h {:.2f}]",
                          m.total_frames, m.avg_latency_ms,
-                         m.avg_preprocess_ms, m.avg_trt_ms, m.avg_d2h_ms);
+                         m.last_pre_ms, m.last_trt_ms, m.last_d2h_ms);
         } else {
             spdlog::info("Final: {} frames processed, {:.2f} ms avg latency",
                          m.total_frames, m.avg_latency_ms);

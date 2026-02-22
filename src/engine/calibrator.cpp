@@ -78,6 +78,7 @@ namespace bytron {
             int end_idx      = std::min(start_idx + batch_size_, static_cast<int>(image_paths_.size()));
             int actual_batch = end_idx - start_idx;
             auto single_input_bytes = std::size_t(3) * input_h_ * input_w_ * sizeof(float);
+            int failed_in_batch = 0;
 
             for (int i = 0; i < actual_batch; ++i) {
                 int buf = i % NUM_BUFS;
@@ -93,6 +94,7 @@ namespace bytron {
                 auto* rgba_data = stbi_load(path.string().c_str(), &src_w, &src_h, &channels, 4);
                 if (!rgba_data) {
                     spdlog::warn("Failed to load calibration image: {}", path.string());
+                    ++failed_in_batch;
                     CUDA_CHECK(cudaMemsetAsync(
                         static_cast<char*>(device_input_) + i * single_input_bytes,
                         0, single_input_bytes, stream_[buf]));
@@ -105,6 +107,7 @@ namespace bytron {
                     spdlog::warn("Calibration image too large ({}x{}, {} bytes > {} limit), skipping: {}",
                                  src_w, src_h, raw_bytes, pinned_staging_size_, path.string());
                     stbi_image_free(rgba_data);
+                    ++failed_in_batch;
                     CUDA_CHECK(cudaMemsetAsync(
                         static_cast<char*>(device_input_) + i * single_input_bytes,
                         0, single_input_bytes, stream_[buf]));
@@ -136,6 +139,13 @@ namespace bytron {
                     0, single_input_bytes, stream_[0]));
             }
 
+            if (failed_in_batch == actual_batch) {
+                spdlog::error("All {} images in calibration batch failed to load", actual_batch);
+                return false;
+            }
+            if (failed_in_batch > 0)
+                spdlog::warn("{}/{} calibration images failed in batch", failed_in_batch, actual_batch);
+
             // Synchronize both streams before returning the batch.
             for (int b = 0; b < NUM_BUFS; ++b)
                 CUDA_CHECK(cudaStreamSynchronize(stream_[b]));
@@ -144,8 +154,8 @@ namespace bytron {
             ++current_batch_;
 
             int total_batches = (static_cast<int>(image_paths_.size()) + batch_size_ - 1) / batch_size_;
-            spdlog::info("Calibration batch {}/{} ({} images)",
-                         current_batch_, total_batches, actual_batch);
+            spdlog::info("Calibration batch {}/{} ({} images, {} failed)",
+                         current_batch_, total_batches, actual_batch, failed_in_batch);
             return true;
 
         } catch (const std::exception& e) {

@@ -71,10 +71,11 @@ target_link_libraries(bytron_lib
     PUBLIC
         CUDA::cudart
         TensorRT::nvinfer
-        TensorRT::nvonnxparser
         Vulkan::Vulkan
         glfw
         spdlog::spdlog
+    PRIVATE
+        TensorRT::nvonnxparser
         nlohmann_json::nlohmann_json
         d3d11
         dxgi

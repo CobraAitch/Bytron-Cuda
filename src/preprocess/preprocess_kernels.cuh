@@ -23,6 +23,8 @@ namespace bytron {
 
     /** @brief Compute letterbox parameters for resizing src into dst with preserved aspect ratio. */
     [[nodiscard]] inline constexpr LetterboxParams compute_letterbox(int src_w, int src_h, int dst_w, int dst_h) {
+        if (src_w <= 0 || src_h <= 0)
+            return { 1.0f, dst_w, dst_h, 0, 0 };
         float scale_w = static_cast<float>(dst_w) / static_cast<float>(src_w);
         float scale_h = static_cast<float>(dst_h) / static_cast<float>(src_h);
         float scale   = (scale_w < scale_h) ? scale_w : scale_h;

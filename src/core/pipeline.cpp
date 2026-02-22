@@ -63,11 +63,15 @@ namespace bytron {
         slot_eager_exec_.resize(num_slots_, true);
         timing_.resize(num_slots_);
 
+        if (use_cuda_graphs_ && cfg_.max_aux_streams > 0)
+            create_aux_streams();
+
         spdlog::info("Pipeline initialized: {} slots, model {}x{}, max {} detections, "
-                     "CUDA graphs: {}, stream priorities: HIGH(inference)/NORMAL(capture), "
+                     "CUDA graphs: {}, aux streams: {}, stream priorities: HIGH(inference)/NORMAL(capture), "
                      "desktop BGRA capture, three-thread architecture",
                      num_slots_, engine_->model_width(), engine_->model_height(),
-                     engine_->max_detections(), use_cuda_graphs_ ? "ON" : "OFF");
+                     engine_->max_detections(), use_cuda_graphs_ ? "ON" : "OFF",
+                     num_aux_streams_);
     }
 
     Pipeline::~Pipeline() {
@@ -75,6 +79,13 @@ namespace bytron {
         capture_thread_   = {};
         inference_thread_ = {};
         // GraphState destructors handle cudaGraphDestroy / cudaGraphExecDestroy via RAII.
+        destroy_aux_streams();
+    }
+
+    void Pipeline::store_exception(std::exception_ptr ep) noexcept {
+        std::lock_guard lock(exception_mtx_);
+        if (!thread_exception_)
+            thread_exception_ = ep;
     }
 
     void Pipeline::run(OutputSink& sink) {
@@ -82,9 +93,10 @@ namespace bytron {
         completed_frames_ = 0;
         eager_frames_     = 0;
         total_latency_us_ = 0;
-        preprocess_us_    = 0;
-        trt_us_           = 0;
-        d2h_us_           = 0;
+        last_pre_ms_      = 0.0f;
+        last_trt_ms_      = 0.0f;
+        last_d2h_ms_      = 0.0f;
+        thread_exception_ = nullptr;
 
         capture_thread_   = std::jthread([this](std::stop_token st) { capture_loop(st); });
         inference_thread_ = std::jthread(
@@ -95,6 +107,9 @@ namespace bytron {
         capture_thread_.request_stop();
         capture_mailbox_.cv.notify_all();
         capture_thread_.join();
+
+        if (thread_exception_)
+            std::rethrow_exception(thread_exception_);
     }
 
     void Pipeline::stop() noexcept {
@@ -104,65 +119,69 @@ namespace bytron {
     }
 
     void Pipeline::capture_loop(std::stop_token stoken) {
-        CUDA_CHECK(cudaSetDevice(cfg_.gpu_device));
-        spdlog::debug("Capture thread started");
+        try {
+            CUDA_CHECK(cudaSetDevice(cfg_.gpu_device));
+            spdlog::debug("Capture thread started");
 
-        int write_idx = 0;
+            int write_idx = 0;
 
-        while (!stoken.stop_requested()) {
-            auto& entry = capture_mailbox_.entries[write_idx];
+            while (!stoken.stop_requested()) {
+                auto& entry = capture_mailbox_.entries[write_idx];
 
-            // Wait until the inference thread has finished reading from this entry
-            // before overwriting it with a new capture frame.
-            CUDA_CHECK(cudaStreamWaitEvent(capture_stream_.get(), entry.read_done.get(), 0));
+                CUDA_CHECK(cudaStreamWaitEvent(capture_stream_.get(), entry.read_done.get(), 0));
 
-            auto result = capture_->acquire_frame_blocking(
-                entry.frame_buf, capture_stream_.get(), 16);
+                auto result = capture_->acquire_frame_blocking(
+                    entry.frame_buf, capture_stream_.get(), 16);
 
-            switch (result) {
-                case AcquireResult::kNewFrame: {
-                    entry.capture_done.record(capture_stream_.get());
-                    entry.width  = capture_->width();
-                    entry.height = capture_->height();
+                switch (result) {
+                    case AcquireResult::kNewFrame: {
+                        entry.capture_done.record(capture_stream_.get());
+                        entry.width  = capture_->width();
+                        entry.height = capture_->height();
 
-                    {
-                        std::lock_guard lock(capture_mailbox_.mtx);
-                        capture_mailbox_.latest_idx = write_idx;
-                        ++capture_mailbox_.sequence;
+                        {
+                            std::lock_guard lock(capture_mailbox_.mtx);
+                            capture_mailbox_.latest_idx = write_idx;
+                            ++capture_mailbox_.sequence;
+                        }
+                        capture_mailbox_.cv.notify_one();
+
+                        write_idx = (write_idx + 1) % CaptureMailbox::NUM_ENTRIES;
+                        break;
                     }
-                    capture_mailbox_.cv.notify_one();
 
-                    write_idx = (write_idx + 1) % CaptureMailbox::NUM_ENTRIES;
-                    break;
-                }
+                    case AcquireResult::kTimeout:
+                        continue;
 
-                case AcquireResult::kTimeout:
-                    continue;
+                    case AcquireResult::kAccessLost:
+                        spdlog::warn("Capture: access lost, re-acquiring...");
+                        for (int attempt = 0; attempt < 20 && !stoken.stop_requested(); ++attempt) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                            if (capture_->reacquire()) break;
+                        }
+                        if (!capture_->is_open()) {
+                            spdlog::error("Capture: failed to re-acquire after retries");
+                            capture_mailbox_.cv.notify_all();
+                            return;
+                        }
+                        continue;
 
-                case AcquireResult::kAccessLost:
-                    spdlog::warn("Capture: access lost, re-acquiring...");
-                    for (int attempt = 0; attempt < 20 && !stoken.stop_requested(); ++attempt) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                        if (capture_->reacquire()) break;
-                    }
-                    if (!capture_->is_open()) {
-                        spdlog::error("Capture: failed to re-acquire after retries");
+                    case AcquireResult::kError:
+                        spdlog::error("Capture: unrecoverable error, exiting");
                         capture_mailbox_.cv.notify_all();
                         return;
-                    }
-                    continue;
-
-                case AcquireResult::kError:
-                    spdlog::error("Capture: unrecoverable error, exiting");
-                    capture_mailbox_.cv.notify_all();
-                    return;
+                }
             }
-        }
 
-        spdlog::debug("Capture thread exiting");
+            spdlog::debug("Capture thread exiting");
+        } catch (...) {
+            store_exception(std::current_exception());
+            capture_mailbox_.cv.notify_all();
+        }
     }
 
     void Pipeline::inference_loop(std::stop_token stoken, OutputSink& sink) {
+      try {
         CUDA_CHECK(cudaSetDevice(cfg_.gpu_device));
         spdlog::debug("Inference thread started");
 
@@ -191,19 +210,19 @@ namespace bytron {
                 slot.ready_event.synchronize();
 
                 float frame_ms = CudaEvent::elapsed_ms(timing_[idx].start, timing_[idx].end);
-                total_latency_us_ += static_cast<std::uint64_t>(frame_ms * 1000.0f);
-                ++completed_frames_;
+                {
+                    std::lock_guard lock(metrics_mtx_);
+                    total_latency_us_ += static_cast<std::uint64_t>(frame_ms * 1000.0f);
+                    ++completed_frames_;
 
-                // Per-stage breakdown is only available for eager-mode frames
-                // (graph replays fuse all stages into a single launch).
-                if (slot_eager_exec_[idx]) {
-                    float pre_ms = CudaEvent::elapsed_ms(timing_[idx].start, timing_[idx].preprocess_done);
-                    float trt_ms = CudaEvent::elapsed_ms(timing_[idx].preprocess_done, timing_[idx].trt_done);
-                    float d2h_ms = CudaEvent::elapsed_ms(timing_[idx].trt_done, timing_[idx].end);
-                    preprocess_us_ += static_cast<std::uint64_t>(pre_ms * 1000.0f);
-                    trt_us_        += static_cast<std::uint64_t>(trt_ms * 1000.0f);
-                    d2h_us_        += static_cast<std::uint64_t>(d2h_ms * 1000.0f);
-                    ++eager_frames_;
+                    // Per-stage breakdown: snapshot latest eager-frame timings.
+                    // Graph replays fuse all stages so intermediate events are invalid.
+                    if (slot_eager_exec_[idx]) {
+                        last_pre_ms_ = CudaEvent::elapsed_ms(timing_[idx].start, timing_[idx].preprocess_done);
+                        last_trt_ms_ = CudaEvent::elapsed_ms(timing_[idx].preprocess_done, timing_[idx].trt_done);
+                        last_d2h_ms_ = CudaEvent::elapsed_ms(timing_[idx].trt_done, timing_[idx].end);
+                        ++eager_frames_;
+                    }
                 }
 
                 harvest_and_deliver(slot, sink);
@@ -237,14 +256,22 @@ namespace bytron {
 
             auto key = res_key(w, h);
 
-            if (use_cuda_graphs_ && slot_warmed_up_[idx]) {
+            // Periodically force an eager frame to refresh per-stage timing
+            // breakdown. At ~275 FPS one eager frame every 500 is <0.1% overhead.
+            static constexpr std::uint64_t PROFILE_INTERVAL = 500;
+            bool force_profile = use_cuda_graphs_ && slot_warmed_up_[idx]
+                              && frame_counter_ > 0
+                              && ((frame_counter_ - 1) % PROFILE_INTERVAL == 0);
+
+            if (use_cuda_graphs_ && slot_warmed_up_[idx] && !force_profile) {
                 auto& cache = *graph_cache_[idx];
                 auto it = cache.find(key);
 
                 if (it == cache.end()) {
                     // Cache miss: capture a new graph for this resolution.
+                    // Evict one entry if full (simple LRU: remove first entry).
                     if (static_cast<int>(cache.size()) >= MAX_CACHED_GRAPHS)
-                        cache.clear();  // Evict all on overflow (simple policy).
+                        cache.erase(cache.begin());
 
                     auto& gs = cache[key];
                     capture_graph(slot, w, h, gs);
@@ -302,21 +329,18 @@ namespace bytron {
             ++next_slot;
 
             if (completed_frames_ > 0 && completed_frames_ % 100 == 0) {
-                auto frames = completed_frames_.load();
-                auto eager  = eager_frames_.load();
+                std::lock_guard lock(metrics_mtx_);
                 double elapsed = fps_timer.elapsed_ms();
-                double avg_ms  = total_latency_us_.load() / (frames * 1000.0);
+                double avg_ms  = total_latency_us_ / (completed_frames_ * 1000.0);
 
-                if (eager > 0) {
+                if (eager_frames_ > 0) {
                     spdlog::info("Frames: {}  FPS: {:.1f}  Avg: {:.2f} ms "
                                  "[pre {:.2f} | trt {:.2f} | d2h {:.2f}]",
-                                 frames, (frames * 1000.0) / elapsed, avg_ms,
-                                 preprocess_us_.load() / (eager * 1000.0),
-                                 trt_us_.load() / (eager * 1000.0),
-                                 d2h_us_.load() / (eager * 1000.0));
+                                 completed_frames_, (completed_frames_ * 1000.0) / elapsed, avg_ms,
+                                 last_pre_ms_, last_trt_ms_, last_d2h_ms_);
                 } else {
                     spdlog::info("Frames: {}  FPS: {:.1f}  Avg: {:.2f} ms (graph replay)",
-                                 frames, (frames * 1000.0) / elapsed, avg_ms);
+                                 completed_frames_, (completed_frames_ * 1000.0) / elapsed, avg_ms);
                 }
             }
         }
@@ -327,39 +351,71 @@ namespace bytron {
                 slots_[i].ready_event.synchronize();
 
                 float frame_ms = CudaEvent::elapsed_ms(timing_[i].start, timing_[i].end);
-                total_latency_us_ += static_cast<std::uint64_t>(frame_ms * 1000.0f);
+                {
+                    std::lock_guard lock(metrics_mtx_);
+                    total_latency_us_ += static_cast<std::uint64_t>(frame_ms * 1000.0f);
+                    ++completed_frames_;
 
-                if (slot_eager_exec_[i]) {
-                    float pre_ms = CudaEvent::elapsed_ms(timing_[i].start, timing_[i].preprocess_done);
-                    float trt_ms = CudaEvent::elapsed_ms(timing_[i].preprocess_done, timing_[i].trt_done);
-                    float d2h_ms = CudaEvent::elapsed_ms(timing_[i].trt_done, timing_[i].end);
-                    preprocess_us_ += static_cast<std::uint64_t>(pre_ms * 1000.0f);
-                    trt_us_        += static_cast<std::uint64_t>(trt_ms * 1000.0f);
-                    d2h_us_        += static_cast<std::uint64_t>(d2h_ms * 1000.0f);
-                    ++eager_frames_;
+                    if (slot_eager_exec_[i]) {
+                        last_pre_ms_ = CudaEvent::elapsed_ms(timing_[i].start, timing_[i].preprocess_done);
+                        last_trt_ms_ = CudaEvent::elapsed_ms(timing_[i].preprocess_done, timing_[i].trt_done);
+                        last_d2h_ms_ = CudaEvent::elapsed_ms(timing_[i].trt_done, timing_[i].end);
+                        ++eager_frames_;
+                    }
                 }
 
-                ++completed_frames_;
                 harvest_and_deliver(slots_[i], sink);
             }
         }
 
-        auto final_frames = completed_frames_.load();
-        auto final_eager  = eager_frames_.load();
-        double elapsed = fps_timer.elapsed_ms();
-        double avg_ms  = final_frames > 0 ? total_latency_us_.load() / (final_frames * 1000.0) : 0.0;
+        {
+            std::lock_guard lock(metrics_mtx_);
+            double elapsed = fps_timer.elapsed_ms();
+            double avg_ms  = completed_frames_ > 0 ? total_latency_us_ / (completed_frames_ * 1000.0) : 0.0;
 
-        if (final_eager > 0) {
-            spdlog::info("Pipeline finished: {} frames, {:.1f} FPS, {:.2f} ms avg "
-                         "[pre {:.2f} | trt {:.2f} | d2h {:.2f}]",
-                         final_frames, (final_frames * 1000.0) / elapsed, avg_ms,
-                         preprocess_us_.load() / (final_eager * 1000.0),
-                         trt_us_.load() / (final_eager * 1000.0),
-                         d2h_us_.load() / (final_eager * 1000.0));
-        } else {
-            spdlog::info("Pipeline finished: {} frames, {:.1f} FPS, {:.2f} ms avg latency",
-                         final_frames, (final_frames * 1000.0) / elapsed, avg_ms);
+            if (eager_frames_ > 0) {
+                spdlog::info("Pipeline finished: {} frames, {:.1f} FPS, {:.2f} ms avg "
+                             "[pre {:.2f} | trt {:.2f} | d2h {:.2f}]",
+                             completed_frames_, (completed_frames_ * 1000.0) / elapsed, avg_ms,
+                             last_pre_ms_, last_trt_ms_, last_d2h_ms_);
+            } else {
+                spdlog::info("Pipeline finished: {} frames, {:.1f} FPS, {:.2f} ms avg latency",
+                             completed_frames_, (completed_frames_ * 1000.0) / elapsed, avg_ms);
+            }
         }
+      } catch (...) {
+          store_exception(std::current_exception());
+          // Request capture thread to stop so run() can join and rethrow.
+          if (capture_thread_.joinable()) capture_thread_.request_stop();
+          capture_mailbox_.cv.notify_all();
+      }
+    }
+
+    void Pipeline::create_aux_streams() {
+        num_aux_streams_ = cfg_.max_aux_streams;
+        slot_aux_streams_.resize(num_slots_);
+
+        for (int i = 0; i < num_slots_; ++i) {
+            slot_aux_streams_[i].resize(num_aux_streams_);
+            for (int j = 0; j < num_aux_streams_; ++j)
+                CUDA_CHECK(cudaStreamCreate(&slot_aux_streams_[i][j]));
+
+            // Tell TRT to use our managed aux streams instead of its internal ones.
+            // During graph capture these will be forked from the capture stream,
+            // ensuring all TRT kernel launches land on captured streams.
+            slots_[i].trt_context->setAuxStreams(
+                slot_aux_streams_[i].data(), num_aux_streams_);
+        }
+
+        spdlog::debug("Created {} aux streams per slot for CUDA graph capture",
+                       num_aux_streams_);
+    }
+
+    void Pipeline::destroy_aux_streams() noexcept {
+        for (auto& slot_streams : slot_aux_streams_)
+            for (auto s : slot_streams)
+                cudaStreamDestroy(s);
+        slot_aux_streams_.clear();
     }
 
     void Pipeline::capture_graph(PipelineSlot& slot, int src_w, int src_h, GraphState& gs) {
@@ -371,10 +427,22 @@ namespace bytron {
         ctx->setTensorAddress(engine_->input_name(), slot.input_buffer.ptr());
         ctx->setTensorAddress(engine_->output_name(), slot.output_buffer.ptr());
 
-        // cudaStreamCaptureModeGlobal: any kernel launch on any stream while
-        // capture is active is included in the graph. Required because TRT
-        // may launch kernels on internal auxiliary streams.
-        CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+        // Relaxed mode: only streams explicitly forked from the capture stream
+        // are included in the graph. This is required for TRT multi-stream —
+        // we fork our managed aux streams below so TRT kernels are captured,
+        // while any other incidental stream activity doesn't cause failures.
+        CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
+
+        // Fork: make each aux stream a dependency of the capture stream so that
+        // TRT kernel launches on them become part of the captured graph.
+        auto& aux = slot_aux_streams_[slot.index];
+        for (int i = 0; i < num_aux_streams_; ++i) {
+            cudaEvent_t fork_event;
+            CUDA_CHECK(cudaEventCreate(&fork_event));
+            CUDA_CHECK(cudaEventRecord(fork_event, stream));
+            CUDA_CHECK(cudaStreamWaitEvent(aux[i], fork_event, 0));
+            CUDA_CHECK(cudaEventDestroy(fork_event));
+        }
 
         launch_fused_preprocess_bgra(
             static_cast<const std::uint8_t*>(slot.raw_buffer.ptr()),
@@ -384,10 +452,22 @@ namespace bytron {
             stream);
 
         if (!ctx->enqueueV3(stream)) {
-            // Abort graph capture before throwing to leave the stream in a valid state.
-            cudaStreamEndCapture(stream, &gs.graph);
+            // Abort graph capture to leave the stream in a valid state.
+            cudaGraph_t aborted = nullptr;
+            cudaStreamEndCapture(stream, &aborted);
+            if (aborted) cudaGraphDestroy(aborted);
             throw std::runtime_error("TRT enqueueV3 failed during graph capture on slot "
                                      + std::to_string(slot.index));
+        }
+
+        // Join: merge aux stream work back into the main capture stream so
+        // cudaStreamEndCapture sees a single-rooted graph.
+        for (int i = 0; i < num_aux_streams_; ++i) {
+            cudaEvent_t join_event;
+            CUDA_CHECK(cudaEventCreate(&join_event));
+            CUDA_CHECK(cudaEventRecord(join_event, aux[i]));
+            CUDA_CHECK(cudaStreamWaitEvent(stream, join_event, 0));
+            CUDA_CHECK(cudaEventDestroy(join_event));
         }
 
         auto output_bytes = std::size_t(engine_->max_detections()) * engine_->output_stride() * sizeof(float);
@@ -410,15 +490,14 @@ namespace bytron {
     }
 
     Pipeline::Metrics Pipeline::metrics() const noexcept {
-        auto frames = completed_frames_.load();
-        auto eager  = eager_frames_.load();
+        std::lock_guard lock(metrics_mtx_);
         return Metrics{
-            .avg_latency_ms    = frames > 0 ? total_latency_us_.load() / (frames * 1000.0) : 0.0,
-            .avg_preprocess_ms = eager > 0 ? preprocess_us_.load() / (eager * 1000.0) : 0.0,
-            .avg_trt_ms        = eager > 0 ? trt_us_.load() / (eager * 1000.0) : 0.0,
-            .avg_d2h_ms        = eager > 0 ? d2h_us_.load() / (eager * 1000.0) : 0.0,
-            .total_frames      = frames,
-            .eager_frames      = eager
+            .avg_latency_ms = completed_frames_ > 0 ? total_latency_us_ / (completed_frames_ * 1000.0) : 0.0,
+            .last_pre_ms    = last_pre_ms_,
+            .last_trt_ms    = last_trt_ms_,
+            .last_d2h_ms    = last_d2h_ms_,
+            .total_frames   = completed_frames_,
+            .eager_frames   = eager_frames_
         };
     }
 

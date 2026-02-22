@@ -4,8 +4,15 @@
  */
 
 #include "output/overlay_kernels.cuh"
+#include "util/cuda_check.hpp"
 
 namespace bytron {
+
+    __device__ void write_pixel(std::uint8_t* frame, int px, int py, int pitch) {
+        auto* pixel = frame + py * pitch + px * 4;
+        // BGRA green: B=0, G=255, R=0, A=255 (fully opaque).
+        pixel[0] = 0; pixel[1] = 255; pixel[2] = 0; pixel[3] = 255;
+    }
 
     __global__ void draw_boxes_kernel(
         std::uint8_t* __restrict__ frame,
@@ -28,40 +35,27 @@ namespace bytron {
         int t = min(thickness, min(box_w / 2, box_h / 2));
         if (t <= 0) t = 1;
 
-        // Decompose border into 4 non-overlapping strips:
-        //   top:    (x1..x2, y1..y1+t-1)
-        //   bottom: (x1..x2, y2-t+1..y2)
-        //   left:   (x1..x1+t-1, y1+t..y2-t)
-        //   right:  (x2-t+1..x2, y1+t..y2-t)
-        int inner_h    = max(0, box_h - 2 * t);
-        int top_count  = box_w * t;
-        int bot_count  = box_w * t;
+        int inner_h = max(0, box_h - 2 * t);
+
+        // 4 separate uniform loops — no warp divergence within each loop.
+        // Top strip: (x1..x2, y1..y1+t-1)
+        int top_count = box_w * t;
+        for (int i = threadIdx.x; i < top_count; i += blockDim.x)
+            write_pixel(frame, x1 + i % box_w, y1 + i / box_w, pitch);
+
+        // Bottom strip: (x1..x2, y2-t+1..y2)
+        int bot_count = box_w * t;
+        for (int i = threadIdx.x; i < bot_count; i += blockDim.x)
+            write_pixel(frame, x1 + i % box_w, (y2 - t + 1) + i / box_w, pitch);
+
+        // Left strip: (x1..x1+t-1, y1+t..y2-t)
         int side_count = t * inner_h;
-        int total      = top_count + bot_count + 2 * side_count;
+        for (int i = threadIdx.x; i < side_count; i += blockDim.x)
+            write_pixel(frame, x1 + i % t, (y1 + t) + i / t, pitch);
 
-        for (int i = threadIdx.x; i < total; i += blockDim.x) {
-            int px, py;
-            if (i < top_count) {
-                px = x1 + i % box_w;
-                py = y1 + i / box_w;
-            } else if (i < top_count + bot_count) {
-                int j = i - top_count;
-                px = x1 + j % box_w;
-                py = (y2 - t + 1) + j / box_w;
-            } else if (i < top_count + bot_count + side_count) {
-                int j = i - top_count - bot_count;
-                px = x1 + j % t;
-                py = (y1 + t) + j / t;
-            } else {
-                int j = i - top_count - bot_count - side_count;
-                px = (x2 - t + 1) + j % t;
-                py = (y1 + t) + j / t;
-            }
-
-            auto* pixel = frame + py * pitch + px * 4;
-            // BGRA green: B=0, G=255, R=0, A=255 (fully opaque).
-            pixel[0] = 0; pixel[1] = 255; pixel[2] = 0; pixel[3] = 255;
-        }
+        // Right strip: (x2-t+1..x2, y1+t..y2-t)
+        for (int i = threadIdx.x; i < side_count; i += blockDim.x)
+            write_pixel(frame, (x2 - t + 1) + i % t, (y1 + t) + i / t, pitch);
     }
 
     void launch_draw_detection_boxes(
@@ -74,6 +68,7 @@ namespace bytron {
         draw_boxes_kernel<<<num_detections, 256, 0, stream>>>(
             frame_bgra, width, height, pitch,
             detections_device, num_detections, thickness);
+        CUDA_CHECK(cudaGetLastError());
     }
 
 }
