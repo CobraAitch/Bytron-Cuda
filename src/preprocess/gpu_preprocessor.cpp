@@ -22,6 +22,7 @@ namespace bytron {
 
         ctx.src_width  = src_w;
         ctx.src_height = src_h;
+        ctx.src_pitch  = src_pitch;
         ctx.scale = params.scale;
         ctx.pad_x = static_cast<float>(params.pad_x);
         ctx.pad_y = static_cast<float>(params.pad_y);

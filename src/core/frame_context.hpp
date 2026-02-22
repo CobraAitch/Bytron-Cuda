@@ -27,6 +27,7 @@ namespace bytron {
 
         int   src_width  = 0;    ///< Original capture frame width in pixels
         int   src_height = 0;    ///< Original capture frame height in pixels
+        int   src_pitch  = 0;    ///< Source row stride in bytes
         float scale      = 1.0f; ///< Letterbox scale factor (min of w_scale, h_scale)
         float pad_x      = 0.0f; ///< Horizontal letterbox padding in model pixels
         float pad_y      = 0.0f; ///< Vertical letterbox padding in model pixels

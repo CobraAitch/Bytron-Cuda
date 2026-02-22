@@ -153,8 +153,13 @@ namespace bytron {
 
         ComPtr<ID3D11Texture2D> desktop_tex;
         hr = desktop_resource.As(&desktop_tex);
-        if (SUCCEEDED(hr))
+        if (SUCCEEDED(hr)) {
             d3d_context_->CopyResource(staging_tex_.Get(), desktop_tex.Get());
+            // Flush ensures the CopyResource command is submitted to the GPU
+            // before CUDA maps the shared texture. Without this, the D3D11
+            // command may still be in the deferred command buffer.
+            d3d_context_->Flush();
+        }
 
         duplication_->ReleaseFrame();
         if (FAILED(hr)) return AcquireResult::kError;

@@ -46,7 +46,13 @@ namespace bytron {
     ) {
         if (!device_frame || display_thread_.get_stop_token().stop_requested()) return;
 
-        auto& mb = mailbox_[write_idx_];
+        int idx;
+        {
+            std::lock_guard lock(mtx_);
+            idx = write_idx_;
+            write_idx_ = (write_idx_ + 1) % MAILBOX_SLOTS;
+        }
+        auto& mb = mailbox_[idx];
 
         auto frame_bytes = std::size_t(width) * 4 * height;
         CUDA_CHECK(cudaMemcpyAsync(mb.frame_buf.ptr(), device_frame,
@@ -62,7 +68,6 @@ namespace bytron {
         mb.pitch          = width * 4;
         mb.num_detections = static_cast<int>(ctx.detections.size());
 
-        // Copy detections into pinned memory for truly async H2D transfer later.
         if (mb.num_detections > 0) {
             std::memcpy(mb.det_pinned.ptr(), ctx.detections.data(),
                         mb.num_detections * sizeof(Detection));
@@ -70,18 +75,14 @@ namespace bytron {
 
         {
             std::lock_guard lock(mtx_);
-            pending_idx_ = write_idx_;
+            pending_idx_ = idx;
         }
         cv_.notify_one();
-
-        write_idx_ = (write_idx_ + 1) % MAILBOX_SLOTS;
     }
 
     void DisplaySink::display_loop(std::stop_token stoken) {
         auto display = std::make_unique<VulkanDisplay>(
             capture_w_, capture_h_, window_name_.c_str());
-
-        int last_presented = -1;
 
         while (!stoken.stop_requested()) {
             int slot_idx;
@@ -92,13 +93,10 @@ namespace bytron {
                 });
                 if (stoken.stop_requested()) break;
                 if (pending_idx_ < 0) {
-                    if (last_presented >= 0) {
-                        auto& mb = mailbox_[last_presented];
-                        display->present(mb.frame_buf.ptr(), mb.width, mb.height,
-                                         overlay_stream_.get());
-                    } else {
-                        display->present(nullptr, 0, 0);
-                    }
+                    // No new frame: poll GLFW events (for close button) without
+                    // re-presenting. MAILBOX mode retains the last image on screen.
+                    // present(nullptr) polls events + returns early — no GPU work.
+                    display->present(nullptr, 0, 0);
                     if (display->should_close()) {
                         window_open_ = false;
                         return;
@@ -129,7 +127,6 @@ namespace bytron {
             }
 
             display->present(mb.frame_buf.ptr(), mb.width, mb.height, os);
-            last_presented = slot_idx;
 
             if (display->should_close()) {
                 window_open_ = false;

@@ -148,6 +148,7 @@ namespace bytron {
 
         std::jthread capture_thread_;    ///< Runs capture_loop().
         std::jthread inference_thread_;  ///< Runs inference_loop().
+        std::atomic<bool> capture_dead_{false};  ///< Set by capture thread on unrecoverable exit.
 
         /** @brief Per-resolution CUDA graph state for replay-based inference. */
         struct GraphState {
@@ -185,16 +186,31 @@ namespace bytron {
          * Uses cudaStreamCaptureModeGlobal so TRT internal streams are included.
          * Called once after warm-up, and again on resolution cache miss.
          */
-        void capture_graph(PipelineSlot& slot, int src_w, int src_h, GraphState& gs);
+        void capture_graph(PipelineSlot& slot, int src_w, int src_h, int src_pitch, GraphState& gs);
 
-        /// Per-slot map from resolution key → cached graph.
-        std::vector<std::unique_ptr<std::unordered_map<std::uint64_t, GraphState>>> graph_cache_;
+        /// Per-slot map from resolution key → cached graph, with LRU eviction order.
+        struct SlotGraphCache {
+            std::unordered_map<std::uint64_t, GraphState> map;
+            std::vector<std::uint64_t> lru;  ///< Front = oldest (evict first), back = most recent.
+
+            void touch(std::uint64_t key) {
+                std::erase(lru, key);
+                lru.push_back(key);
+            }
+
+            void evict_oldest() {
+                if (lru.empty()) return;
+                map.erase(lru.front());
+                lru.erase(lru.begin());
+            }
+        };
+        std::vector<std::unique_ptr<SlotGraphCache>> graph_cache_;
         bool use_cuda_graphs_ = false;   ///< From config; enables graph capture after warm-up.
 
-        /// Per-slot auxiliary CUDA streams for TRT multi-stream graph capture.
-        /// When capturing a CUDA graph, these are forked from the main capture
-        /// stream and passed to TRT via setAuxStreams(), ensuring all TRT kernel
-        /// launches land on streams that are part of the graph.
+        /// Per-slot auxiliary CUDA streams for TRT multi-stream execution.
+        /// Registered via setAuxStreams() so we control TRT's parallel streams.
+        /// Used for: (1) graph capture fork/join, (2) eager-path profiling
+        /// sync (joining aux work before recording trt_done event).
         int num_aux_streams_ = 0;
         std::vector<std::vector<cudaStream_t>> slot_aux_streams_;
         std::vector<std::vector<CudaEvent>> slot_aux_sync_events_;
@@ -212,8 +228,8 @@ namespace bytron {
         std::uint64_t completed_frames_{0};
         std::uint64_t eager_frames_{0};
 
-        /// Latest per-stage timings from the most recent eager profiling frame.
-        /// Updated every PROFILE_INTERVAL frames; displayed as-is (not averaged).
+        /// Latest per-stage timings from the most recent profiling frame.
+        /// Updated every PROFILE_INTERVAL frames; warm-up frames are excluded.
         float last_pre_ms_{0.0f};
         float last_trt_ms_{0.0f};
         float last_d2h_ms_{0.0f};

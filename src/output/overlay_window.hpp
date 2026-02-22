@@ -5,10 +5,9 @@
 
 #pragma once
 
-#define NOMINMAX
 #include <windows.h>
+#include <cstddef>
 #include <cstdint>
-#include <vector>
 
 namespace bytron {
 
@@ -32,8 +31,8 @@ namespace bytron {
         OverlayWindow(const OverlayWindow&) = delete;
         OverlayWindow& operator=(const OverlayWindow&) = delete;
 
-        [[nodiscard]] std::uint8_t* pixels()      noexcept { return pixels_.data(); }
-        [[nodiscard]] std::size_t   pixel_bytes()  const noexcept { return pixels_.size(); }
+        [[nodiscard]] std::uint8_t* pixels()      noexcept { return dib_bits_; }
+        [[nodiscard]] std::size_t   pixel_bytes()  const noexcept { return static_cast<std::size_t>(width_) * height_ * 4; }
         [[nodiscard]] int           width()        const noexcept { return width_; }
         [[nodiscard]] int           height()       const noexcept { return height_; }
 
@@ -53,8 +52,6 @@ namespace bytron {
         HBITMAP dib_     = nullptr;
         HBITMAP old_bmp_ = nullptr;
         std::uint8_t* dib_bits_ = nullptr;
-
-        std::vector<std::uint8_t> pixels_;
 
         bool closed_ = false;
     };

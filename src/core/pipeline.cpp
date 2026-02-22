@@ -83,7 +83,7 @@ namespace bytron {
 
         graph_cache_.reserve(num_slots_);
         for (int i = 0; i < num_slots_; ++i)
-            graph_cache_.push_back(std::make_unique<std::unordered_map<std::uint64_t, GraphState>>());
+            graph_cache_.push_back(std::make_unique<SlotGraphCache>());
         slot_warmed_up_.resize(num_slots_, false);
         slot_eager_exec_.resize(num_slots_, true);
         timing_.resize(num_slots_);
@@ -122,6 +122,7 @@ namespace bytron {
         last_trt_ms_      = 0.0f;
         last_d2h_ms_      = 0.0f;
         thread_exception_ = nullptr;
+        capture_dead_.store(false, std::memory_order_relaxed);
 
         capture_thread_   = std::jthread([this](std::stop_token st) { capture_loop(st); });
         inference_thread_ = std::jthread(
@@ -163,6 +164,7 @@ namespace bytron {
                         entry.capture_done.record(capture_stream_.get());
                         entry.width  = capture_->width();
                         entry.height = capture_->height();
+                        entry.pitch  = capture_->pitch();
 
                         {
                             std::lock_guard lock(capture_mailbox_.mtx);
@@ -186,6 +188,7 @@ namespace bytron {
                         }
                         if (!capture_->is_open()) {
                             spdlog::error("Capture: failed to re-acquire after retries");
+                            capture_dead_.store(true, std::memory_order_release);
                             capture_mailbox_.cv.notify_all();
                             return;
                         }
@@ -193,6 +196,7 @@ namespace bytron {
 
                     case AcquireResult::kError:
                         spdlog::error("Capture: unrecoverable error, exiting");
+                        capture_dead_.store(true, std::memory_order_release);
                         capture_mailbox_.cv.notify_all();
                         return;
                 }
@@ -201,6 +205,7 @@ namespace bytron {
             spdlog::debug("Capture thread exiting");
         } catch (...) {
             store_exception(std::current_exception());
+            capture_dead_.store(true, std::memory_order_release);
             capture_mailbox_.cv.notify_all();
         }
     }
@@ -219,16 +224,20 @@ namespace bytron {
             {
                 std::unique_lock lock(capture_mailbox_.mtx);
                 if (!capture_mailbox_.cv.wait(lock, stoken, [&] {
-                    return capture_mailbox_.sequence > capture_mailbox_.consumed_sequence;
+                    return capture_mailbox_.sequence > capture_mailbox_.consumed_sequence
+                        || capture_dead_.load(std::memory_order_acquire);
                 })) {
                     break;
                 }
+                if (capture_dead_.load(std::memory_order_acquire)
+                    && capture_mailbox_.sequence <= capture_mailbox_.consumed_sequence)
+                    break;
 
                 read_idx = capture_mailbox_.latest_idx;
                 capture_mailbox_.consumed_sequence = capture_mailbox_.sequence;
             }
 
-            auto& slot = slots_[next_slot % num_slots_];
+            auto& slot = slots_[next_slot];
             int idx = slot.index;
 
             if (slot_in_flight[idx]) {
@@ -273,8 +282,9 @@ namespace bytron {
 
             entry.read_done.record(stream);
 
-            int w = entry.width;
-            int h = entry.height;
+            int w     = entry.width;
+            int h     = entry.height;
+            int pitch = entry.pitch;
 
             slot.frame_ctx.frame_id   = frame_counter_++;
             slot.frame_ctx.slot_index = idx;
@@ -290,24 +300,24 @@ namespace bytron {
 
             if (use_cuda_graphs_ && slot_warmed_up_[idx] && !force_profile) {
                 auto& cache = *graph_cache_[idx];
-                auto it = cache.find(key);
+                auto it = cache.map.find(key);
 
-                if (it == cache.end()) {
-                    // Cache miss: capture a new graph for this resolution.
-                    // Evict one entry if full (simple LRU: remove first entry).
-                    if (static_cast<int>(cache.size()) >= MAX_CACHED_GRAPHS)
-                        cache.erase(cache.begin());
+                if (it == cache.map.end()) {
+                    if (static_cast<int>(cache.map.size()) >= MAX_CACHED_GRAPHS)
+                        cache.evict_oldest();
 
-                    auto& gs = cache[key];
-                    capture_graph(slot, w, h, gs);
+                    auto& gs = cache.map[key];
+                    capture_graph(slot, w, h, pitch, gs);
                     spdlog::debug("CUDA graph captured for slot {} ({}x{}), cache size {}",
-                                  idx, w, h, cache.size());
-                    it = cache.find(key);
+                                  idx, w, h, cache.map.size());
+                    it = cache.map.find(key);
                 }
+                cache.touch(key);
 
                 auto params = compute_letterbox(w, h, engine_->model_width(), engine_->model_height());
                 slot.frame_ctx.src_width  = w;
                 slot.frame_ctx.src_height = h;
+                slot.frame_ctx.src_pitch  = pitch;
                 slot.frame_ctx.scale = params.scale;
                 slot.frame_ctx.pad_x = static_cast<float>(params.pad_x);
                 slot.frame_ctx.pad_y = static_cast<float>(params.pad_y);
@@ -316,7 +326,7 @@ namespace bytron {
                 slot_eager_exec_[idx] = false;
             } else {
                 preprocessor_->preprocess_bgra(
-                    slot.raw_buffer, w, h, w * 4,
+                    slot.raw_buffer, w, h, entry.pitch,
                     slot.input_buffer, slot.frame_ctx, stream);
 
                 timing_[idx].preprocess_done.record(stream);
@@ -348,15 +358,19 @@ namespace bytron {
                 auto output_bytes = std::size_t(engine_->max_detections()) * engine_->output_stride() * sizeof(float);
                 slot.output_buffer.copy_to_host_async(slot.output_pinned.ptr(), output_bytes, stream);
 
-                slot_eager_exec_[idx] = true;
+                // Warm-up frames include TRT auto-tuning which distorts
+                // per-stage timings — exclude them from profiling metrics.
+                slot_eager_exec_[idx] = !(use_cuda_graphs_ && !slot_warmed_up_[idx]);
 
                 // Warm-up: run one eager pass before graph capture to let TRT
                 // auto-tune kernels. Sync ensures all work completes before capture.
                 if (use_cuda_graphs_ && !slot_warmed_up_[idx]) {
                     CUDA_CHECK(cudaStreamSynchronize(stream));
                     slot_warmed_up_[idx] = true;
-                    auto& gs = (*graph_cache_[idx])[key];
-                    capture_graph(slot, w, h, gs);
+                    auto& cache = *graph_cache_[idx];
+                    auto& gs = cache.map[key];
+                    capture_graph(slot, w, h, pitch, gs);
+                    cache.touch(key);
                     spdlog::debug("CUDA graph captured for slot {} ({}x{})", idx, w, h);
                 }
             }
@@ -364,7 +378,7 @@ namespace bytron {
             timing_[idx].end.record(stream);
             slot.ready_event.record(stream);
             slot_in_flight[idx] = true;
-            ++next_slot;
+            next_slot = (next_slot + 1) % num_slots_;
 
             if (completed_frames_ > 0 && completed_frames_ % 100 == 0) {
                 std::lock_guard lock(metrics_mtx_);
@@ -464,7 +478,7 @@ namespace bytron {
         slot_aux_streams_.clear();
     }
 
-    void Pipeline::capture_graph(PipelineSlot& slot, int src_w, int src_h, GraphState& gs) {
+    void Pipeline::capture_graph(PipelineSlot& slot, int src_w, int src_h, int src_pitch, GraphState& gs) {
         auto stream = slot.stream.get();
 
         auto& ctx = slot.trt_context;
@@ -493,7 +507,7 @@ namespace bytron {
         launch_fused_preprocess_bgra(
             static_cast<const std::uint8_t*>(slot.raw_buffer.ptr()),
             static_cast<float*>(slot.input_buffer.ptr()),
-            src_w, src_h, src_w * 4,
+            src_w, src_h, src_pitch,
             engine_->model_width(), engine_->model_height(),
             stream);
 
@@ -532,7 +546,7 @@ namespace bytron {
         int w = slot.frame_ctx.src_width;
         int h = slot.frame_ctx.src_height;
         sink.on_frame(slot.frame_ctx, slot.raw_buffer.ptr(),
-                      w, h, w * 4, slot.stream.get(), slot.display_copy_done.get());
+                      w, h, slot.frame_ctx.src_pitch, slot.stream.get(), slot.display_copy_done.get());
     }
 
     Pipeline::Metrics Pipeline::metrics() const noexcept {

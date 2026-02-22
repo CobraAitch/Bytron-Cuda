@@ -14,7 +14,6 @@
 #include <vector>
 
 #ifdef _WIN32
-#define NOMINMAX
 #include <windows.h>
 #include <vulkan/vulkan_win32.h>
 #include <cuda.h>
@@ -77,14 +76,22 @@ namespace bytron {
                          "excluded from capture", capture_w, capture_h);
         }
 
-        create_instance();
-        create_surface();
-        pick_physical_device();
-        create_device();
-        create_swapchain();
-        create_command_pool();
-        create_staging_buffer();
-        create_sync_objects();
+        try {
+            create_instance();
+            create_surface();
+            pick_physical_device();
+            create_device();
+            create_swapchain();
+            create_command_pool();
+            create_staging_buffer();
+            create_sync_objects();
+        } catch (...) {
+            // Destructor won't run for a partially-constructed object, so
+            // clean up the GLFW window to prevent a resource leak.
+            if (window_) { glfwDestroyWindow(window_); window_ = nullptr; }
+            glfwTerminate();
+            throw;
+        }
 
         spdlog::info("VulkanDisplay initialized: {}x{}, {} frames in flight, mode: {}",
                      capture_w, capture_h, FRAMES_IN_FLIGHT,
@@ -505,14 +512,18 @@ namespace bytron {
             HANDLE win32_handle = nullptr;
             VK_CHECK(vkGetMemoryWin32HandleKHR_fn(device_, &handle_info, &win32_handle));
 
+            // RAII guard: ensure handle is closed even if CUDA import throws.
+            struct HandleGuard {
+                HANDLE h;
+                ~HandleGuard() { if (h) CloseHandle(h); }
+            } handle_guard{win32_handle};
+
             cudaExternalMemoryHandleDesc cuda_mem_desc{};
             cuda_mem_desc.type                = cudaExternalMemoryHandleTypeOpaqueWin32;
             cuda_mem_desc.handle.win32.handle = win32_handle;
             cuda_mem_desc.size                = mem_reqs.size;
 
             CUDA_CHECK(cudaImportExternalMemory(&cuda_ext_mem_, &cuda_mem_desc));
-
-            CloseHandle(win32_handle);
 
             cudaExternalMemoryBufferDesc buf_desc{};
             buf_desc.offset = 0;
@@ -568,12 +579,16 @@ namespace bytron {
                 HANDLE win32_handle = nullptr;
                 VK_CHECK(vkGetSemaphoreWin32HandleKHR_fn(device_, &handle_info, &win32_handle));
 
+                struct HandleGuard {
+                    HANDLE h;
+                    ~HandleGuard() { if (h) CloseHandle(h); }
+                } sem_handle_guard{win32_handle};
+
                 cudaExternalSemaphoreHandleDesc sem_desc{};
                 sem_desc.type                = cudaExternalSemaphoreHandleTypeOpaqueWin32;
                 sem_desc.handle.win32.handle = win32_handle;
 
                 CUDA_CHECK(cudaImportExternalSemaphore(&cuda_ext_sem_[i], &sem_desc));
-                CloseHandle(win32_handle);
             }
         }
     }
@@ -694,6 +709,7 @@ namespace bytron {
         glfwPollEvents();
         if (should_close()) return;
         if (!device_bgra) return;
+        if (width <= 0 || height <= 0 || width > capture_w_ || height > capture_h_) return;
 
         auto& fr = frames_[current_frame_];
 

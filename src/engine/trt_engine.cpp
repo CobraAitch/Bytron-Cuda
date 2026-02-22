@@ -43,8 +43,6 @@ namespace bytron {
             spdlog::info("Building TensorRT engine from ONNX: {}",
                          config.onnx_path.string());
             build_from_onnx(config);
-            serialize_to_file(config.engine_cache_path);
-            spdlog::info("Engine cached to: {}", config.engine_cache_path.string());
         }
 
         auto num_io = engine_->getNbIOTensors();
@@ -203,6 +201,11 @@ namespace bytron {
             }
         }
 
+        // Save the serialized bytes directly from buildSerializedNetwork,
+        // avoiding the deprecated engine_->serialize() re-serialization path.
+        serialize_to_file(config.engine_cache_path, serialized->data(), serialized->size());
+        spdlog::info("Engine cached to: {}", config.engine_cache_path.string());
+
         runtime_ = TrtUniquePtr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(logger));
         if (!runtime_) throw std::runtime_error("Failed to create TRT runtime");
 
@@ -232,17 +235,15 @@ namespace bytron {
                 "Failed to deserialize engine (cache may be stale -- delete .engine and rebuild)");
     }
 
-    void TrtEngine::serialize_to_file(const std::filesystem::path& path) {
+    void TrtEngine::serialize_to_file(const std::filesystem::path& path,
+                                      const void* data, std::size_t size) {
         if (path.has_parent_path())
             std::filesystem::create_directories(path.parent_path());
-
-        auto serialized = TrtUniquePtr<nvinfer1::IHostMemory>(engine_->serialize());
-        if (!serialized) throw std::runtime_error("Failed to serialize engine");
 
         std::ofstream file(path, std::ios::binary);
         if (!file.is_open())
             throw std::runtime_error("Failed to create engine file: " + path.string());
-        file.write(static_cast<const char*>(serialized->data()), serialized->size());
+        file.write(static_cast<const char*>(data), size);
     }
 
     TrtUniquePtr<nvinfer1::IExecutionContext> TrtEngine::create_context() {

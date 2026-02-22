@@ -35,7 +35,13 @@ namespace bytron {
     ) {
         if (display_thread_.get_stop_token().stop_requested()) return;
 
-        auto& mb = mailbox_[write_idx_];
+        int idx;
+        {
+            std::lock_guard lock(mtx_);
+            idx = write_idx_;
+            write_idx_ = (write_idx_ + 1) % MAILBOX_SLOTS;
+        }
+        auto& mb = mailbox_[idx];
         mb.detections = ctx.detections;
         mb.src_width  = width;
         mb.src_height = height;
@@ -45,11 +51,9 @@ namespace bytron {
 
         {
             std::lock_guard lock(mtx_);
-            pending_idx_ = write_idx_;
+            pending_idx_ = idx;
         }
         cv_.notify_one();
-
-        write_idx_ = (write_idx_ + 1) % MAILBOX_SLOTS;
     }
 
     void OverlaySink::display_loop(std::stop_token stoken) {

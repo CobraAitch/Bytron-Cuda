@@ -70,7 +70,8 @@ namespace bytron {
     private:
         void build_from_onnx(const BuildConfig& config);
         void load_from_cache(const std::filesystem::path& path);
-        void serialize_to_file(const std::filesystem::path& path);
+        void serialize_to_file(const std::filesystem::path& path,
+                               const void* data, std::size_t size);
 
         TrtUniquePtr<nvinfer1::IRuntime>    runtime_;
         TrtUniquePtr<nvinfer1::ICudaEngine> engine_;

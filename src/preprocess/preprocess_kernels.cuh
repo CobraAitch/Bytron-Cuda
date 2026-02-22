@@ -28,8 +28,8 @@ namespace bytron {
         float scale_w = static_cast<float>(dst_w) / static_cast<float>(src_w);
         float scale_h = static_cast<float>(dst_h) / static_cast<float>(src_h);
         float scale   = (scale_w < scale_h) ? scale_w : scale_h;
-        int   new_w   = static_cast<int>(src_w * scale);
-        int   new_h   = static_cast<int>(src_h * scale);
+        int   new_w   = static_cast<int>(src_w * scale + 0.5f);
+        int   new_h   = static_cast<int>(src_h * scale + 0.5f);
         return { scale, new_w, new_h, (dst_w - new_w) / 2, (dst_h - new_h) / 2 };
     }
 

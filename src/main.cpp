@@ -14,7 +14,6 @@
 #include <iostream>
 #include <memory>
 
-#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
 static std::unique_ptr<bytron::Pipeline> g_pipeline;

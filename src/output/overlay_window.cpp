@@ -6,7 +6,6 @@
 #include "output/overlay_window.hpp"
 
 #include <spdlog/spdlog.h>
-#include <cstring>
 #include <stdexcept>
 
 namespace bytron {
@@ -82,8 +81,6 @@ namespace bytron {
 
         old_bmp_ = static_cast<HBITMAP>(SelectObject(mem_dc_, dib_));
 
-        pixels_.resize(static_cast<std::size_t>(width_) * height_ * 4, 0);
-
         ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 
         spdlog::info("Overlay window: {}x{}, click-through, per-pixel alpha, "
@@ -102,8 +99,7 @@ namespace bytron {
     void OverlayWindow::present() {
         if (closed_) return;
 
-        std::memcpy(dib_bits_, pixels_.data(), pixels_.size());
-
+        // Callers draw directly into dib_bits_ (via pixels()), so no copy needed.
         POINT pt_pos = { 0, 0 };
         SIZE  sz     = { static_cast<LONG>(width_), static_cast<LONG>(height_) };
         POINT pt_src = { 0, 0 };

@@ -38,6 +38,7 @@ namespace bytron {
             CudaEvent        read_done;    ///< Signaled after inference finishes reading
             int width  = 0;  ///< Actual frame width for this capture
             int height = 0;  ///< Actual frame height for this capture
+            int pitch  = 0;  ///< Row stride in bytes (may differ from width*4 due to alignment)
         };
 
         Entry entries[NUM_ENTRIES];
