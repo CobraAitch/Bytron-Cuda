@@ -36,6 +36,8 @@ namespace bytron {
             int                   opt_batch_size         = 1;       ///< Optimal batch for optimization profile
             std::size_t           max_workspace_bytes    = 1ULL << 28; ///< TRT workspace limit (default 256 MB)
             int                   max_aux_streams        = 0;       ///< TRT auxiliary streams for layer parallelism
+            int                   builder_opt_level      = 5;       ///< Builder optimization level [0-5]
+            std::size_t           l2_cache_bytes         = 0;       ///< L2 persistent cache per context (0 = disabled)
             std::filesystem::path calibration_data_dir;             ///< Image directory for INT8 calibration
             int                   calibration_batch_size = 8;       ///< Images per INT8 calibration batch
         };
@@ -75,6 +77,7 @@ namespace bytron {
 
         std::string input_name_;
         std::string output_name_;
+        std::size_t l2_cache_bytes_ = 0;  ///< L2 persistent cache per context
     };
 
 }

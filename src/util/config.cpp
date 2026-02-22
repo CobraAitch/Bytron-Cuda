@@ -48,6 +48,8 @@ namespace bytron {
         if (j.contains("calibration_batch_size")) cfg.calibration_batch_size = j["calibration_batch_size"];
         if (j.contains("max_workspace_bytes"))     cfg.max_workspace_bytes    = j["max_workspace_bytes"].get<std::size_t>();
         if (j.contains("max_aux_streams"))        cfg.max_aux_streams        = j["max_aux_streams"];
+        if (j.contains("builder_opt_level"))      cfg.builder_opt_level      = j["builder_opt_level"];
+        if (j.contains("l2_cache_bytes"))         cfg.l2_cache_bytes         = j["l2_cache_bytes"].get<std::size_t>();
         if (j.contains("display"))                cfg.display                = j["display"];
         if (j.contains("overlay"))                cfg.overlay                = j["overlay"];
 
@@ -76,6 +78,8 @@ namespace bytron {
             throw std::runtime_error("max_frame_width and max_frame_height must be > 0");
         if (calibration_batch_size <= 0)
             throw std::runtime_error(std::format("calibration_batch_size must be > 0, got {}", calibration_batch_size));
+        if (builder_opt_level < 0 || builder_opt_level > 5)
+            throw std::runtime_error(std::format("builder_opt_level {} out of range [0, 5]", builder_opt_level));
     }
 
     void Config::apply_cli(int argc, char** argv) {

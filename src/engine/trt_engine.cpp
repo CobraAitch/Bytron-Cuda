@@ -31,7 +31,9 @@ namespace bytron {
         return s + "]";
     }
 
-    TrtEngine::TrtEngine(const BuildConfig& config) {
+    TrtEngine::TrtEngine(const BuildConfig& config)
+        : l2_cache_bytes_(config.l2_cache_bytes)
+    {
         // Cache-or-build: load serialized .engine if exists (fast), else build from ONNX (slow).
         if (std::filesystem::exists(config.engine_cache_path)) {
             spdlog::info("Loading cached TensorRT engine: {}",
@@ -116,6 +118,10 @@ namespace bytron {
         if (config.max_aux_streams > 0)
             builder_config->setMaxAuxStreams(config.max_aux_streams);
 
+        builder_config->setBuilderOptimizationLevel(config.builder_opt_level);
+        builder_config->setFlag(nvinfer1::BuilderFlag::kDIRECT_IO);
+        builder_config->setFlag(nvinfer1::BuilderFlag::kREJECT_EMPTY_ALGORITHMS);
+
         auto timing_cache_path = config.engine_cache_path;
         timing_cache_path.replace_extension(".timing");
 
@@ -170,9 +176,9 @@ namespace bytron {
         builder_config->addOptimizationProfile(profile);
 
         auto build_start = std::chrono::steady_clock::now();
-        spdlog::info("Building engine (FP16={}, layers={})...",
+        spdlog::info("Building engine (FP16={}, layers={}, opt_level={}, direct_io=ON)...",
                      config.precision == Precision::FP16 || config.precision == Precision::INT8,
-                     network->getNbLayers());
+                     network->getNbLayers(), config.builder_opt_level);
 
         builder_config->setProgressMonitor(nullptr);
 
@@ -242,6 +248,10 @@ namespace bytron {
     TrtUniquePtr<nvinfer1::IExecutionContext> TrtEngine::create_context() {
         auto ctx = TrtUniquePtr<nvinfer1::IExecutionContext>(engine_->createExecutionContext());
         if (!ctx) throw std::runtime_error("Failed to create TRT execution context");
+
+        if (l2_cache_bytes_ > 0)
+            ctx->setPersistentCacheLimit(l2_cache_bytes_);
+
         return ctx;
     }
 

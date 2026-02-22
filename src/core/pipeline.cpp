@@ -20,9 +20,32 @@ namespace bytron {
         , num_slots_(std::clamp(cfg.num_pipeline_slots, 2, MAX_SLOTS))
         , use_cuda_graphs_(cfg.use_cuda_graphs)
     {
+        CUDA_CHECK(cudaSetDevice(cfg_.gpu_device));
+
         capture_ = std::make_unique<DesktopCapture>(cfg_.monitor_index);
         if (!capture_->is_open())
             throw std::runtime_error("Failed to open desktop capture");
+
+        // Raise the CUDA device-level L2 persistent cache limit so TRT can
+        // actually use the full requested size.  Without this, the driver
+        // default is often smaller (e.g. 9 MB on RTX 4070 Ti) and TRT logs a
+        // warning about the shortfall.
+        std::size_t effective_l2 = cfg_.l2_cache_bytes;
+        if (effective_l2 > 0) {
+            int max_l2 = 0;
+            CUDA_CHECK(cudaDeviceGetAttribute(
+                &max_l2, cudaDevAttrMaxPersistingL2CacheSize, cfg_.gpu_device));
+
+            effective_l2 = std::min(effective_l2, static_cast<std::size_t>(max_l2));
+            if (effective_l2 > 0) {
+                CUDA_CHECK(cudaDeviceSetLimit(
+                    cudaLimitPersistingL2CacheSize, effective_l2));
+                spdlog::info("L2 persistent cache: requested {} MB, hw max {} MB, set {} MB",
+                             cfg_.l2_cache_bytes >> 20, max_l2 >> 20, effective_l2 >> 20);
+            } else {
+                spdlog::info("GPU does not support L2 persistent cache — disabled");
+            }
+        }
 
         TrtEngine::BuildConfig engine_cfg{
             .onnx_path              = cfg_.onnx_path,
@@ -32,6 +55,8 @@ namespace bytron {
             .opt_batch_size         = 1,
             .max_workspace_bytes    = cfg_.max_workspace_bytes,
             .max_aux_streams        = cfg_.max_aux_streams,
+            .builder_opt_level      = cfg_.builder_opt_level,
+            .l2_cache_bytes         = effective_l2,
             .calibration_data_dir   = cfg_.calibration_images_dir,
             .calibration_batch_size = cfg_.calibration_batch_size,
         };
@@ -63,7 +88,7 @@ namespace bytron {
         slot_eager_exec_.resize(num_slots_, true);
         timing_.resize(num_slots_);
 
-        if (use_cuda_graphs_ && cfg_.max_aux_streams > 0)
+        if (cfg_.max_aux_streams > 0)
             create_aux_streams();
 
         spdlog::info("Pipeline initialized: {} slots, model {}x{}, max {} detections, "
@@ -305,6 +330,19 @@ namespace bytron {
                 if (!ctx->enqueueV3(stream))
                     throw std::runtime_error("TRT enqueueV3 failed on slot " + std::to_string(idx));
 
+                // Join aux streams so trt_done reflects full inference time
+                // including aux stream work. Without this, trt_done fires when
+                // the main stream's portion completes and the D2H memcpy
+                // absorbs residual aux inference time.
+                if (num_aux_streams_ > 0) {
+                    auto& aux  = slot_aux_streams_[idx];
+                    auto& sync = slot_aux_sync_events_[idx];
+                    for (int a = 0; a < num_aux_streams_; ++a) {
+                        sync[a].record(aux[a]);
+                        CUDA_CHECK(cudaStreamWaitEvent(stream, sync[a].get(), 0));
+                    }
+                }
+
                 timing_[idx].trt_done.record(stream);
 
                 auto output_bytes = std::size_t(engine_->max_detections()) * engine_->output_stride() * sizeof(float);
@@ -394,11 +432,18 @@ namespace bytron {
     void Pipeline::create_aux_streams() {
         num_aux_streams_ = cfg_.max_aux_streams;
         slot_aux_streams_.resize(num_slots_);
+        slot_aux_sync_events_.resize(num_slots_);
 
         for (int i = 0; i < num_slots_; ++i) {
             slot_aux_streams_[i].resize(num_aux_streams_);
             for (int j = 0; j < num_aux_streams_; ++j)
                 CUDA_CHECK(cudaStreamCreate(&slot_aux_streams_[i][j]));
+
+            // Non-timing events for joining aux stream work back to the
+            // main stream before profiling event recording.
+            slot_aux_sync_events_[i].reserve(num_aux_streams_);
+            for (int j = 0; j < num_aux_streams_; ++j)
+                slot_aux_sync_events_[i].emplace_back(false);
 
             // Tell TRT to use our managed aux streams instead of its internal ones.
             // During graph capture these will be forked from the capture stream,
@@ -407,11 +452,12 @@ namespace bytron {
                 slot_aux_streams_[i].data(), num_aux_streams_);
         }
 
-        spdlog::debug("Created {} aux streams per slot for CUDA graph capture",
+        spdlog::debug("Created {} aux streams per slot with sync events",
                        num_aux_streams_);
     }
 
     void Pipeline::destroy_aux_streams() noexcept {
+        slot_aux_sync_events_.clear();
         for (auto& slot_streams : slot_aux_streams_)
             for (auto s : slot_streams)
                 cudaStreamDestroy(s);

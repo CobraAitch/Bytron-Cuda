@@ -53,6 +53,8 @@ namespace bytron {
         int         max_frame_height   = 2160;           ///< Maximum capture frame height for buffer pre-allocation
         std::size_t max_workspace_bytes = 1ULL << 30;    ///< TRT workspace limit (default 1 GB)
         int         max_aux_streams    = 4;              ///< TRT auxiliary streams for layer parallelism
+        int         builder_opt_level  = 5;              ///< TRT builder optimization level [0-5], higher = slower build, faster inference
+        std::size_t l2_cache_bytes     = 16ULL << 20;    ///< L2 persistent cache per context (default 16 MB, 0 = disabled)
 
         std::filesystem::path calibration_images_dir;  ///< Image directory for INT8 calibration
         int calibration_batch_size = 8;                ///< Images per INT8 calibration batch

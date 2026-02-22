@@ -197,6 +197,7 @@ namespace bytron {
         /// launches land on streams that are part of the graph.
         int num_aux_streams_ = 0;
         std::vector<std::vector<cudaStream_t>> slot_aux_streams_;
+        std::vector<std::vector<CudaEvent>> slot_aux_sync_events_;
 
         void create_aux_streams();
         void destroy_aux_streams() noexcept;
