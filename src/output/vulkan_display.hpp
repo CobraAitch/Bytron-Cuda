@@ -102,7 +102,18 @@ namespace bytron {
         void create_staging_buffer();
         void create_sync_objects();
         void recreate_swapchain();
-        void submit_and_present();
+
+        /**
+         * @brief Acquire the next swapchain image for the current frame.
+         * @return false if the swapchain was recreated (skip this frame).
+         *
+         * Called *before* any CUDA semaphore signal so an out-of-date swapchain
+         * never leaves a signaled-but-unwaited binary semaphore behind.
+         */
+        [[nodiscard]] bool acquire_next_image(std::uint32_t& image_index);
+
+        /** @brief Record the staging-to-swapchain copy, submit, and present. */
+        void submit_and_present(std::uint32_t image_index);
 
         bool transparent_ = false;  ///< True = overlay mode (host-mapped), false = full-frame (CUDA interop).
 

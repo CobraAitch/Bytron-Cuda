@@ -13,7 +13,7 @@ namespace bytron {
         float*              __restrict__ dst,
         int src_w, int src_h, int src_pitch,
         int dst_w, int dst_h, int plane_size,
-        float scale, int pad_x, int pad_y, int new_w, int new_h
+        float inv_scale, int pad_x, int pad_y, int new_w, int new_h
     ) {
         const int dx = blockIdx.x * blockDim.x + threadIdx.x;
         const int dy = blockIdx.y * blockDim.y + threadIdx.y;
@@ -25,8 +25,8 @@ namespace bytron {
         const int dst_idx = dy * dst_w + dx;
 
         if (rx >= 0 && rx < new_w && ry >= 0 && ry < new_h) {
-            const float sx = (static_cast<float>(rx) + 0.5f) / scale - 0.5f;
-            const float sy = (static_cast<float>(ry) + 0.5f) / scale - 0.5f;
+            const float sx = (static_cast<float>(rx) + 0.5f) * inv_scale - 0.5f;
+            const float sy = (static_cast<float>(ry) + 0.5f) * inv_scale - 0.5f;
 
             const int x0  = __float2int_rd(sx);
             const int y0  = __float2int_rd(sy);
@@ -77,17 +77,20 @@ namespace bytron {
         const std::uint8_t* src, float* dst,
         int src_w, int src_h, int src_pitch,
         int dst_w, int dst_h,
+        const LetterboxParams& params,
         cudaStream_t stream
     ) {
-        auto params = compute_letterbox(src_w, src_h, dst_w, dst_h);
-
         dim3 block(32, 8);
         dim3 grid((dst_w + 31) / 32, (dst_h + 7) / 8);
+
+        // Reciprocal computed once on the host so every thread multiplies
+        // instead of dividing.
+        const float inv_scale = 1.0f / params.scale;
 
         fused_preprocess_kernel_bgra<<<grid, block, 0, stream>>>(
             src, dst, src_w, src_h, src_pitch, dst_w, dst_h,
             dst_h * dst_w,
-            params.scale, params.pad_x, params.pad_y, params.new_w, params.new_h);
+            inv_scale, params.pad_x, params.pad_y, params.new_w, params.new_h);
         CUDA_CHECK(cudaGetLastError());
     }
 

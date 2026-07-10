@@ -34,38 +34,33 @@ namespace bytron {
         spdlog::info("D3D11 device created, feature level: {:#x}",
                      static_cast<unsigned>(feature_level));
 
-        ComPtr<IDXGIDevice> dxgi_device;
-        hr = d3d_device_.As(&dxgi_device);
-        if (FAILED(hr)) throw std::runtime_error("Failed to get IDXGIDevice");
-
-        ComPtr<IDXGIAdapter> adapter;
-        hr = dxgi_device->GetAdapter(adapter.GetAddressOf());
-        if (FAILED(hr)) throw std::runtime_error("Failed to get DXGI adapter");
-
-        ComPtr<IDXGIOutput> output;
-        hr = adapter->EnumOutputs(static_cast<UINT>(monitor_index), output.GetAddressOf());
-        if (FAILED(hr))
-            throw std::runtime_error("Failed to enumerate DXGI output "
-                                     + std::to_string(monitor_index));
-
-        DXGI_OUTPUT_DESC output_desc{};
-        output->GetDesc(&output_desc);
-        width_  = output_desc.DesktopCoordinates.right  - output_desc.DesktopCoordinates.left;
-        height_ = output_desc.DesktopCoordinates.bottom - output_desc.DesktopCoordinates.top;
+        if (!create_duplication())
+            throw std::runtime_error(
+                "Failed to initialize DXGI output duplication for monitor "
+                + std::to_string(monitor_index)
+                + ". Ensure no other app holds the duplication.");
 
         spdlog::info("Desktop capture target: monitor {} ({}x{})",
                      monitor_index, width_, height_);
 
-        ComPtr<IDXGIOutput1> output1;
-        hr = output.As(&output1);
-        if (FAILED(hr))
-            throw std::runtime_error("Failed to get IDXGIOutput1 (requires Windows 8+)");
+        create_staging_and_register();
 
-        hr = output1->DuplicateOutput(d3d_device_.Get(), duplication_.GetAddressOf());
-        if (FAILED(hr))
-            throw std::runtime_error("DuplicateOutput failed (HRESULT: "
-                                     + std::to_string(hr)
-                                     + "). Ensure no other app holds the duplication.");
+        open_ = true;
+        spdlog::info("DXGI Desktop Duplication initialized: {}x{}, BGRA, pitch={}",
+                     width_, height_, pitch());
+    }
+
+    DesktopCapture::~DesktopCapture() {
+        if (cuda_resource_) cudaGraphicsUnregisterResource(cuda_resource_);
+        if (duplication_)   duplication_->ReleaseFrame();
+    }
+
+    void DesktopCapture::create_staging_and_register() {
+        if (cuda_resource_) {
+            cudaGraphicsUnregisterResource(cuda_resource_);
+            cuda_resource_ = nullptr;
+        }
+        staging_tex_.Reset();
 
         D3D11_TEXTURE2D_DESC staging_desc{};
         staging_desc.Width            = static_cast<UINT>(width_);
@@ -78,20 +73,62 @@ namespace bytron {
         staging_desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
         staging_desc.MiscFlags        = D3D11_RESOURCE_MISC_SHARED;
 
-        hr = d3d_device_->CreateTexture2D(&staging_desc, nullptr, staging_tex_.GetAddressOf());
-        if (FAILED(hr)) throw std::runtime_error("Failed to create staging texture");
+        if (FAILED(d3d_device_->CreateTexture2D(&staging_desc, nullptr, staging_tex_.GetAddressOf())))
+            throw std::runtime_error("Failed to create staging texture");
 
         CUDA_CHECK(cudaGraphicsD3D11RegisterResource(
             &cuda_resource_, staging_tex_.Get(), cudaGraphicsRegisterFlagsNone));
-
-        open_ = true;
-        spdlog::info("DXGI Desktop Duplication initialized: {}x{}, BGRA, pitch={}",
-                     width_, height_, pitch());
     }
 
-    DesktopCapture::~DesktopCapture() {
-        if (cuda_resource_) cudaGraphicsUnregisterResource(cuda_resource_);
-        if (duplication_)   duplication_->ReleaseFrame();
+    bool DesktopCapture::create_duplication() {
+        ComPtr<IDXGIDevice> dxgi_device;
+        HRESULT hr = d3d_device_.As(&dxgi_device);
+        if (FAILED(hr)) {
+            spdlog::error("Failed to get IDXGIDevice (HRESULT: {:#x})",
+                          static_cast<unsigned long>(hr));
+            return false;
+        }
+
+        ComPtr<IDXGIAdapter> adapter;
+        hr = dxgi_device->GetAdapter(adapter.GetAddressOf());
+        if (FAILED(hr)) {
+            spdlog::error("Failed to get DXGI adapter (HRESULT: {:#x})",
+                          static_cast<unsigned long>(hr));
+            return false;
+        }
+
+        ComPtr<IDXGIOutput> output;
+        hr = adapter->EnumOutputs(static_cast<UINT>(monitor_index_), output.GetAddressOf());
+        if (FAILED(hr)) {
+            spdlog::error("Failed to enumerate DXGI output {} (HRESULT: {:#x})",
+                          monitor_index_, static_cast<unsigned long>(hr));
+            return false;
+        }
+
+        DXGI_OUTPUT_DESC output_desc{};
+        output->GetDesc(&output_desc);
+        int w = output_desc.DesktopCoordinates.right  - output_desc.DesktopCoordinates.left;
+        int h = output_desc.DesktopCoordinates.bottom - output_desc.DesktopCoordinates.top;
+        if (width_ != 0 && (w != width_ || h != height_))
+            spdlog::info("Output resolution changed {}x{} -> {}x{}", width_, height_, w, h);
+        width_  = w;
+        height_ = h;
+
+        ComPtr<IDXGIOutput1> output1;
+        hr = output.As(&output1);
+        if (FAILED(hr)) {
+            spdlog::error("Failed to get IDXGIOutput1 (requires Windows 8+)");
+            return false;
+        }
+
+        hr = output1->DuplicateOutput(d3d_device_.Get(), duplication_.GetAddressOf());
+        if (FAILED(hr)) {
+            spdlog::warn("DuplicateOutput failed (HRESULT: {:#x})",
+                         static_cast<unsigned long>(hr));
+            return false;
+        }
+
+        return true;
     }
 
     bool DesktopCapture::reacquire() {
@@ -100,42 +137,31 @@ namespace bytron {
             duplication_.Reset();
         }
 
-        ComPtr<IDXGIDevice> dxgi_device;
-        HRESULT hr = d3d_device_.As(&dxgi_device);
-        if (FAILED(hr)) return false;
+        if (!create_duplication()) return false;
 
-        ComPtr<IDXGIAdapter> adapter;
-        hr = dxgi_device->GetAdapter(adapter.GetAddressOf());
-        if (FAILED(hr)) return false;
-
-        ComPtr<IDXGIOutput> output;
-        hr = adapter->EnumOutputs(static_cast<UINT>(monitor_index_), output.GetAddressOf());
-        if (FAILED(hr)) return false;
-
-        ComPtr<IDXGIOutput1> output1;
-        hr = output.As(&output1);
-        if (FAILED(hr)) return false;
-
-        hr = output1->DuplicateOutput(d3d_device_.Get(), duplication_.GetAddressOf());
-        if (FAILED(hr)) {
-            spdlog::warn("DuplicateOutput re-acquire failed (HRESULT: {})", hr);
+        // The output size may have changed (mode switch); rebuild the staging
+        // texture and CUDA registration to match the new dimensions.
+        try {
+            create_staging_and_register();
+        } catch (const std::exception& e) {
+            spdlog::error("Failed to rebuild staging texture on re-acquire: {}", e.what());
             return false;
         }
 
         open_ = true;
-        spdlog::info("DXGI Desktop Duplication re-acquired successfully");
+        spdlog::info("DXGI Desktop Duplication re-acquired successfully ({}x{})", width_, height_);
         return true;
     }
 
-    AcquireResult DesktopCapture::acquire_frame_blocking(
-        CudaDeviceBuffer& dst, cudaStream_t stream, UINT timeout_ms
+    AcquireResult DesktopCapture::acquire_frame(
+        CudaDeviceBuffer& dst, cudaStream_t stream, unsigned timeout_ms
     ) {
         if (!open_) return AcquireResult::kError;
 
         ComPtr<IDXGIResource> desktop_resource;
         DXGI_OUTDUPL_FRAME_INFO frame_info{};
         HRESULT hr = duplication_->AcquireNextFrame(
-            timeout_ms, &frame_info, desktop_resource.GetAddressOf());
+            static_cast<UINT>(timeout_ms), &frame_info, desktop_resource.GetAddressOf());
 
         if (hr == DXGI_ERROR_WAIT_TIMEOUT)
             return AcquireResult::kTimeout;

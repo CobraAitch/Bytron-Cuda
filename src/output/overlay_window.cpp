@@ -96,7 +96,7 @@ namespace bytron {
         if (hwnd_) DestroyWindow(hwnd_);
     }
 
-    void OverlayWindow::present() {
+    void OverlayWindow::present(const RECT* dirty) {
         if (closed_) return;
 
         // Callers draw directly into dib_bits_ (via pixels()), so no copy needed.
@@ -109,8 +109,17 @@ namespace bytron {
         blend.SourceConstantAlpha = 255;
         blend.AlphaFormat         = AC_SRC_ALPHA;
 
-        UpdateLayeredWindow(hwnd_, nullptr, &pt_pos, &sz,
-                            mem_dc_, &pt_src, 0, &blend, ULW_ALPHA);
+        UPDATELAYEREDWINDOWINFO info{};
+        info.cbSize   = sizeof(info);
+        info.pptDst   = &pt_pos;
+        info.psize    = &sz;
+        info.hdcSrc   = mem_dc_;
+        info.pptSrc   = &pt_src;
+        info.pblend   = &blend;
+        info.dwFlags  = ULW_ALPHA;
+        info.prcDirty = dirty;  // nullptr = re-upload the entire window
+
+        UpdateLayeredWindowIndirect(hwnd_, &info);
 
         poll_events();
     }

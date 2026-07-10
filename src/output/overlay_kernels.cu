@@ -8,10 +8,10 @@
 
 namespace bytron {
 
-    __device__ void write_pixel(std::uint8_t* frame, int px, int py, int pitch) {
-        auto* pixel = frame + py * pitch + px * 4;
-        // BGRA green: B=0, G=255, R=0, A=255 (fully opaque).
-        pixel[0] = 0; pixel[1] = 255; pixel[2] = 0; pixel[3] = 255;
+    __device__ __forceinline__ void write_pixel(std::uint8_t* frame, int px, int py, int pitch) {
+        // BGRA green (B=0, G=255, R=0, A=255) as a single aligned 32-bit store.
+        // Pixel addresses are 4-byte aligned (pitch is a multiple of 4).
+        *reinterpret_cast<std::uint32_t*>(frame + py * pitch + px * 4) = 0xFF00FF00u;
     }
 
     __global__ void draw_boxes_kernel(

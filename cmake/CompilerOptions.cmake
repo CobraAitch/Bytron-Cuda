@@ -7,13 +7,20 @@ if(MSVC)
         $<$<COMPILE_LANGUAGE:CXX>:/permissive->
         $<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>
         $<$<COMPILE_LANGUAGE:CXX>:/utf-8>
+        # Target machines all carry RTX-class GPUs, so AVX2 on the host CPU is
+        # a given — lets MSVC vectorize the overlay rendering and postprocess loops.
+        $<$<COMPILE_LANGUAGE:CXX>:/arch:AVX2>
     )
 
-    # Release optimizations — use generator expressions for multi-config
+    # Release optimizations — use generator expressions for multi-config.
+    # /fp:fast is safe here: CPU float math is box-coordinate arithmetic with
+    # no strict-IEEE requirements (matches --use_fast_math on the CUDA side).
     add_compile_options(
         $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:/O2>
         $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:/GL>
+        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:/fp:fast>
         $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:RelWithDebInfo>>:/O2>
+        $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:RelWithDebInfo>>:/fp:fast>
     )
     add_link_options(
         $<$<CONFIG:Release>:/LTCG>

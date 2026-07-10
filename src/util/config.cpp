@@ -52,6 +52,12 @@ namespace bytron {
         if (j.contains("l2_cache_bytes"))         cfg.l2_cache_bytes         = j["l2_cache_bytes"].get<std::size_t>();
         if (j.contains("display"))                cfg.display                = j["display"];
         if (j.contains("overlay"))                cfg.overlay                = j["overlay"];
+        if (j.contains("capture_backend")) {
+            auto b = j["capture_backend"].get<std::string>();
+            cfg.capture_backend = (b == "dxgi" || b == "duplication" || b == "desktop_duplication")
+                                ? CaptureBackend::DesktopDuplication
+                                : CaptureBackend::GraphicsCapture;
+        }
 
         if (j.contains("detection_schema")) {
             auto& s = j["detection_schema"];
@@ -111,6 +117,12 @@ namespace bytron {
             }
             else if (arg == "--conf")                    confidence_threshold   = std::stof(next());
             else if (arg == "--slots")                   num_pipeline_slots     = std::stoi(next());
+            else if (arg == "--capture") {
+                auto b = next();
+                capture_backend = (b == "dxgi" || b == "duplication" || b == "desktop_duplication")
+                                ? CaptureBackend::DesktopDuplication
+                                : CaptureBackend::GraphicsCapture;
+            }
             else if (arg == "--no-display")              display                = false;
             else if (arg == "--no-overlay")              overlay                = false;
             else if (arg == "--no-cuda-graphs")          use_cuda_graphs        = false;

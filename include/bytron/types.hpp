@@ -45,6 +45,19 @@ namespace bytron {
     };
 
     /**
+     * @brief Screen capture backend selection.
+     *
+     * GraphicsCapture is the modern Windows.Graphics.Capture (WinRT) path:
+     * compositor-driven, GPU-resident, borderless/cursorless, and the
+     * preferred default. DesktopDuplication is the legacy DXGI Output
+     * Duplication path, used automatically when WGC is unavailable.
+     */
+    enum class CaptureBackend {
+        GraphicsCapture,    ///< Windows.Graphics.Capture (Windows 10 1903+/11)
+        DesktopDuplication  ///< DXGI Output Duplication (fallback)
+    };
+
+    /**
      * @brief Describes the per-detection field layout in the model output tensor.
      *
      * Maps semantic fields (bounding box corners, confidence, class ID) to

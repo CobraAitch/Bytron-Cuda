@@ -26,6 +26,19 @@ namespace bytron {
             if (result != VK_SUCCESS)
                 throw std::runtime_error(std::format("Vulkan error {} in {}", static_cast<int>(result), call));
         }
+
+        std::uint32_t find_memory_type(VkPhysicalDevice physical_device,
+                                       std::uint32_t type_bits,
+                                       VkMemoryPropertyFlags required) {
+            VkPhysicalDeviceMemoryProperties mem_props;
+            vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_props);
+            for (std::uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
+                if ((type_bits & (1u << i)) &&
+                    (mem_props.memoryTypes[i].propertyFlags & required) == required)
+                    return i;
+            }
+            throw std::runtime_error("No Vulkan memory type with required properties");
+        }
     }
 
 #define VK_CHECK(call) check_vk(call, #call)
@@ -422,22 +435,9 @@ namespace bytron {
             VkMemoryRequirements mem_reqs;
             vkGetBufferMemoryRequirements(device_, staging_buf_, &mem_reqs);
 
-            VkPhysicalDeviceMemoryProperties mem_props;
-            vkGetPhysicalDeviceMemoryProperties(physical_device_, &mem_props);
-
-            VkMemoryPropertyFlags required =
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-            std::uint32_t mem_type = UINT32_MAX;
-            for (std::uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
-                if ((mem_reqs.memoryTypeBits & (1 << i)) &&
-                    (mem_props.memoryTypes[i].propertyFlags & required) == required) {
-                    mem_type = i;
-                    break;
-                }
-            }
-            if (mem_type == UINT32_MAX) {
-                throw std::runtime_error("No HOST_VISIBLE+HOST_COHERENT Vulkan memory type");
-            }
+            std::uint32_t mem_type = find_memory_type(
+                physical_device_, mem_reqs.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
             VkMemoryAllocateInfo alloc_info{};
             alloc_info.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -470,20 +470,9 @@ namespace bytron {
             VkMemoryRequirements mem_reqs;
             vkGetBufferMemoryRequirements(device_, staging_buf_, &mem_reqs);
 
-            VkPhysicalDeviceMemoryProperties mem_props;
-            vkGetPhysicalDeviceMemoryProperties(physical_device_, &mem_props);
-
-            std::uint32_t mem_type = UINT32_MAX;
-            for (std::uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
-                if ((mem_reqs.memoryTypeBits & (1 << i)) &&
-                    (mem_props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-                    mem_type = i;
-                    break;
-                }
-            }
-            if (mem_type == UINT32_MAX) {
-                throw std::runtime_error("No suitable Vulkan memory type for staging buffer");
-            }
+            std::uint32_t mem_type = find_memory_type(
+                physical_device_, mem_reqs.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
             VkExportMemoryAllocateInfo export_info{};
             export_info.sType       = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
@@ -603,21 +592,23 @@ namespace bytron {
         create_swapchain();
     }
 
-    void VulkanDisplay::submit_and_present() {
-        auto& fr = frames_[current_frame_];
-
-        std::uint32_t image_index = 0;
+    bool VulkanDisplay::acquire_next_image(std::uint32_t& image_index) {
         VkResult result = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
-                                                 fr.image_available, VK_NULL_HANDLE,
-                                                 &image_index);
+                                                 frames_[current_frame_].image_available,
+                                                 VK_NULL_HANDLE, &image_index);
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR) {
             recreate_swapchain();
-            return;
+            return false;
         }
         if (result == VK_ERROR_DEVICE_LOST)
             throw std::runtime_error("Vulkan device lost during vkAcquireNextImageKHR");
         if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
             VK_CHECK(result);
+        return true;
+    }
+
+    void VulkanDisplay::submit_and_present(std::uint32_t image_index) {
+        auto& fr = frames_[current_frame_];
 
         VK_CHECK(vkResetCommandBuffer(fr.cmd, 0));
 
@@ -682,6 +673,10 @@ namespace bytron {
         submit_info.signalSemaphoreCount = 1;
         submit_info.pSignalSemaphores    = &fr.render_finished;
 
+        // Fence is reset only here, immediately before the submit that will
+        // re-signal it — earlier failure paths leave it signaled, so the next
+        // frame's wait can never deadlock.
+        VK_CHECK(vkResetFences(device_, 1, &fr.fence));
         VK_CHECK(vkQueueSubmit(graphics_queue_, 1, &submit_info, fr.fence));
 
         VkPresentInfoKHR present_info{};
@@ -692,7 +687,7 @@ namespace bytron {
         present_info.pSwapchains        = &swapchain_;
         present_info.pImageIndices      = &image_index;
 
-        result = vkQueuePresentKHR(present_queue_, &present_info);
+        VkResult result = vkQueuePresentKHR(present_queue_, &present_info);
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
             result == VK_ERROR_SURFACE_LOST_KHR) {
             recreate_swapchain();
@@ -712,9 +707,13 @@ namespace bytron {
         if (width <= 0 || height <= 0 || width > capture_w_ || height > capture_h_) return;
 
         auto& fr = frames_[current_frame_];
-
         vkWaitForFences(device_, 1, &fr.fence, VK_TRUE, UINT64_MAX);
-        vkResetFences(device_, 1, &fr.fence);
+
+        // Acquire before signaling the CUDA semaphore: if the swapchain is out
+        // of date we bail here, so the binary semaphore is never left signaled
+        // without a matching wait (double-signaling one is invalid).
+        std::uint32_t image_index = 0;
+        if (!acquire_next_image(image_index)) return;
 
         std::size_t frame_bytes = static_cast<std::size_t>(width) * 4 * height;
         CUDA_CHECK(cudaMemcpyAsync(cuda_staging_ptr_, device_bgra,
@@ -728,7 +727,7 @@ namespace bytron {
             &cuda_ext_sem_[current_frame_], &signal_params, 1, cuda_stream));
         pending_cuda_signal_ = true;
 
-        submit_and_present();
+        submit_and_present(image_index);
     }
 
     void VulkanDisplay::present_overlay() {
@@ -736,11 +735,12 @@ namespace bytron {
         if (should_close()) return;
 
         auto& fr = frames_[current_frame_];
-
         vkWaitForFences(device_, 1, &fr.fence, VK_TRUE, UINT64_MAX);
-        vkResetFences(device_, 1, &fr.fence);
 
-        submit_and_present();
+        std::uint32_t image_index = 0;
+        if (!acquire_next_image(image_index)) return;
+
+        submit_and_present(image_index);
     }
 
     bool VulkanDisplay::should_close() const {
