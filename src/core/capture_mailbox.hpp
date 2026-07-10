@@ -18,16 +18,17 @@ namespace bytron {
      * @brief Triple-buffered mailbox for the capture-to-inference handoff.
      *
      * Protocol: capture thread writes to entries[write_idx], records
-     * capture_done, updates latest_idx + sequence under mtx, and notifies cv.
-     * Inference thread waits on cv, reads latest_idx, waits on capture_done,
-     * copies frame data, then records read_done. Capture thread waits on
-     * read_done before overwriting that entry.
+     * capture_done, then under mtx updates the entry metadata (width/height/
+     * pitch) plus latest_idx + sequence, and notifies cv. Inference thread
+     * waits on cv, reads latest_idx and the entry metadata under mtx, waits on
+     * capture_done, copies frame data, then records read_done. Capture thread
+     * waits on read_done before overwriting that entry.
      *
      * Uses std::condition_variable_any (not condition_variable) because
      * stop_token-aware wait() requires it.
      *
-     * @note Thread safety: mtx + cv protect latest_idx and sequence.
-     *       GPU synchronization uses CUDA events.
+     * @note Thread safety: mtx + cv protect latest_idx, sequence, and per-entry
+     *       metadata. GPU frame data synchronization uses CUDA events.
      */
     struct CaptureMailbox {
         static constexpr int NUM_ENTRIES = 3;  ///< Triple-buffered

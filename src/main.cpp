@@ -50,6 +50,7 @@ Options:
   -c, --config <path>     JSON config file
   --conf <float>          Confidence threshold (default: 0.25)
   --slots <n>             Pipeline slots / frames in flight (default: 3)
+  --capture <wgc|dxgi>    Capture backend (default: wgc = Windows.Graphics.Capture)
   --calibration-dir <dir> Directory of images for INT8 calibration
   --calibration-batch <n> Batch size for INT8 calibration (default: 8)
   --no-display            Disable display window
@@ -81,6 +82,12 @@ int main(int argc, char** argv) {
         spdlog::info("Model:     {}", cfg.onnx_path.string());
         spdlog::info("Precision: {}", cfg.precision == bytron::Precision::FP16 ? "FP16" : "INT8");
         spdlog::info("Slots:     {}", cfg.num_pipeline_slots);
+
+        // Raise the process class so capture/inference threads (which run at
+        // THREAD_PRIORITY_HIGHEST) outrank background load. Threads block on
+        // events/CVs between frames, so this does not starve the system.
+        if (!SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS))
+            spdlog::warn("Failed to raise process priority class");
 
         g_pipeline = std::make_unique<bytron::Pipeline>(cfg);
 

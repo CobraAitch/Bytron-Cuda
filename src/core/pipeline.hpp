@@ -9,7 +9,7 @@
 #include "core/capture_mailbox.hpp"
 #include "core/cuda_event.hpp"
 #include "core/cuda_stream.hpp"
-#include "capture/desktop_capture.hpp"
+#include "capture/capture_source.hpp"
 #include "preprocess/gpu_preprocessor.hpp"
 #include "engine/trt_engine.hpp"
 #include "postprocess/postprocessor.hpp"
@@ -119,11 +119,30 @@ namespace bytron {
         /**
          * @brief Inference thread: cycles slots through preprocess → TRT → postprocess → deliver.
          *
-         * Waits for the mailbox CV, then processes the latest capture entry. Slot
-         * reuse is gated on ready_event completion and display_copy_done to prevent
-         * overwriting a frame the display sink hasn't finished copying.
+         * Waits for the mailbox CV, finalizes the oldest in-flight slot, then
+         * consumes the *freshest* capture entry (which may be newer than the one
+         * that triggered the wakeup). Slot reuse is gated on ready_event completion
+         * and display_copy_done to prevent overwriting a frame the display sink
+         * hasn't finished copying.
          */
         void inference_loop(std::stop_token stoken, OutputSink& sink);
+
+        /**
+         * @brief Enqueue preprocess + TRT + D2H for a frame already copied into the slot.
+         *
+         * Dispatches to CUDA graph replay when warmed up (with periodic eager
+         * profiling frames), otherwise runs the eager path and captures a graph
+         * after the first warm-up pass.
+         */
+        void launch_inference(PipelineSlot& slot, int w, int h, int pitch);
+
+        /**
+         * @brief Wait for a slot's in-flight work, record metrics, and deliver results.
+         *
+         * Blocks on ready_event, accumulates GPU latency into the metrics counters
+         * (per-stage breakdown for eager frames), then postprocesses and delivers.
+         */
+        void finalize_slot(PipelineSlot& slot, OutputSink& sink);
 
         /**
          * @brief Postprocess TRT output and deliver to the output sink.
@@ -136,7 +155,7 @@ namespace bytron {
         Config cfg_;
         int    num_slots_;  ///< Actual slot count [2, MAX_SLOTS], clamped from config.
 
-        std::unique_ptr<DesktopCapture>  capture_;        ///< DXGI desktop duplication source.
+        std::unique_ptr<ICaptureSource>  capture_;        ///< Screen capture source (WGC or DXGI).
         std::unique_ptr<GpuPreprocessor> preprocessor_;   ///< Fused resize+letterbox+normalize kernel.
         std::unique_ptr<TrtEngine>       engine_;         ///< TensorRT engine (owns serialized plan).
         std::unique_ptr<Postprocessor>   postprocessor_;  ///< Confidence filter + inverse letterbox.
@@ -208,6 +227,9 @@ namespace bytron {
         bool use_cuda_graphs_ = false;   ///< From config; enables graph capture after warm-up.
 
         /// Per-slot auxiliary CUDA streams for TRT multi-stream execution.
+        /// Created non-blocking at high priority: they carry inference kernels on
+        /// the critical path, so they must match the slot stream's priority and
+        /// never serialize with the legacy default stream.
         /// Registered via setAuxStreams() so we control TRT's parallel streams.
         /// Used for: (1) graph capture fork/join, (2) eager-path profiling
         /// sync (joining aux work before recording trt_done event).

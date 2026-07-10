@@ -19,7 +19,10 @@ namespace bytron {
         : capture_w_(capture_w)
         , capture_h_(capture_h)
         , window_name_(window_name)
-        , copy_stream_(StreamPriority::Low)
+        // The pipeline gates slot reuse on the D2D copy this stream performs,
+        // so it must not be starved by other GPU work. Overlay draw + present
+        // stay low priority — they never block inference.
+        , copy_stream_(StreamPriority::High)
         , overlay_stream_(StreamPriority::Low)
     {
         auto frame_bytes = std::size_t(capture_w) * capture_h * 4;
@@ -46,13 +49,20 @@ namespace bytron {
     ) {
         if (!device_frame || display_thread_.get_stop_token().stop_requested()) return;
 
-        int idx;
+        // Pick a slot the display thread is neither reading nor about to claim.
+        // Replacing pending_idx_ below (not the slot itself) gives latest-wins:
+        // an unclaimed older frame is simply superseded.
+        int idx = 0;
         {
             std::lock_guard lock(mtx_);
-            idx = write_idx_;
-            write_idx_ = (write_idx_ + 1) % MAILBOX_SLOTS;
+            while (idx == reading_idx_ || idx == pending_idx_) ++idx;
         }
         auto& mb = mailbox_[idx];
+
+        // The display's last GPU use of this slot (H2D dets + overlay draw +
+        // staging copy) must finish before its buffers are overwritten. That
+        // was 2+ presents ago, so this almost never blocks.
+        mb.present_done.synchronize();
 
         auto frame_bytes = std::size_t(width) * 4 * height;
         CUDA_CHECK(cudaMemcpyAsync(mb.frame_buf.ptr(), device_frame,
@@ -105,6 +115,7 @@ namespace bytron {
                 }
                 slot_idx = pending_idx_;
                 pending_idx_ = -1;
+                reading_idx_ = slot_idx;  // Claim: writer won't touch this slot now.
             }
 
             auto& mb = mailbox_[slot_idx];
@@ -127,6 +138,14 @@ namespace bytron {
             }
 
             display->present(mb.frame_buf.ptr(), mb.width, mb.height, os);
+
+            // All GPU reads of this slot are enqueued on os; mark the point the
+            // writer must wait for before reusing the slot, then release it.
+            mb.present_done.record(os);
+            {
+                std::lock_guard lock(mtx_);
+                reading_idx_ = -1;
+            }
 
             if (display->should_close()) {
                 window_open_ = false;

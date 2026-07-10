@@ -41,7 +41,9 @@ find_package(nlohmann_json  REQUIRED)
 # ──────────────────────────── Sources ────────────────────────────────────
 set(BYTRON_SOURCES
     src/core/pipeline.cpp
+    src/capture/capture_source.cpp
     src/capture/desktop_capture.cpp
+    src/capture/graphics_capture.cpp
     src/preprocess/gpu_preprocessor.cpp
     src/engine/trt_engine.cpp
     src/engine/calibrator.cpp
@@ -59,12 +61,35 @@ set(BYTRON_CUDA_SOURCES
     src/output/overlay_kernels.cu
 )
 
+# ──────────────────────────── C++/WinRT (Windows.Graphics.Capture) ────────
+# The C++/WinRT projection headers live in <SDK>/Include/<ver>/cppwinrt, which
+# is NOT on the default compiler include path. Locate it from the Windows SDK.
+get_filename_component(_win10_sdk_root
+    "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots;KitsRoot10]"
+    ABSOLUTE CACHE)
+if(NOT _win10_sdk_root OR NOT EXISTS "${_win10_sdk_root}")
+    set(_win10_sdk_root "C:/Program Files (x86)/Windows Kits/10")
+endif()
+
+set(_sdk_ver "${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}")
+if(NOT _sdk_ver)
+    set(_sdk_ver "10.0.26100.0")
+endif()
+
+set(BYTRON_CPPWINRT_DIR "${_win10_sdk_root}/Include/${_sdk_ver}/cppwinrt")
+if(NOT EXISTS "${BYTRON_CPPWINRT_DIR}/winrt/base.h")
+    message(WARNING
+        "C++/WinRT headers not found at ${BYTRON_CPPWINRT_DIR}; "
+        "Windows.Graphics.Capture backend will fail to build.")
+endif()
+
 # ──────────────────────────── Library target ─────────────────────────────
 add_library(bytron_lib STATIC ${BYTRON_SOURCES} ${BYTRON_CUDA_SOURCES})
 
 target_include_directories(bytron_lib
     PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    PRIVATE "${BYTRON_CPPWINRT_DIR}"
 )
 
 # Prevent <windows.h> from defining min/max macros that conflict with std::min/max.
@@ -82,6 +107,7 @@ target_link_libraries(bytron_lib
         nlohmann_json::nlohmann_json
         d3d11
         dxgi
+        windowsapp   # WinRT activation for Windows.Graphics.Capture
 )
 
 # ──────────────────────────── Executable ─────────────────────────────────
@@ -99,4 +125,48 @@ if(TensorRT_BIN_DIR AND EXISTS "${TensorRT_BIN_DIR}")
             COMMENT "Copying ${_dll_name}"
         )
     endforeach()
+endif()
+
+# ──────────────────────────── Tests ──────────────────────────────────────
+# CPU-side units only (letterbox math, postprocess transform, config) — no GPU
+# required, so `ctest` runs anywhere. Relevant sources are compiled in directly
+# to keep the heavy CUDA/TRT/Vulkan link chain out of the test binary.
+option(BYTRON_BUILD_TESTS "Build unit tests" OFF)
+option(BYTRON_BUILD_BENCHMARKS "Build CPU micro-benchmarks" OFF)
+
+if(BYTRON_BUILD_TESTS)
+    find_package(GTest CONFIG REQUIRED)
+    enable_testing()
+    include(GoogleTest)
+
+    add_executable(bytron_tests
+        tests/test_letterbox.cpp
+        tests/test_postprocessor.cpp
+        tests/test_config.cpp
+        src/postprocess/postprocessor.cpp
+        src/util/config.cpp
+    )
+    target_include_directories(bytron_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_definitions(bytron_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(bytron_tests PRIVATE
+        GTest::gtest GTest::gtest_main
+        spdlog::spdlog
+        nlohmann_json::nlohmann_json
+        CUDA::cudart)   # header path for compute_letterbox; no GPU calls at runtime
+
+    gtest_discover_tests(bytron_tests)
+endif()
+
+# ──────────────────────────── Benchmarks ─────────────────────────────────
+if(BYTRON_BUILD_BENCHMARKS)
+    add_executable(bytron_bench
+        benchmarks/bench_cpu.cpp
+        src/postprocess/postprocessor.cpp)
+    target_include_directories(bytron_bench PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_definitions(bytron_bench PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(bytron_bench PRIVATE CUDA::cudart)
 endif()

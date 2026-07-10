@@ -42,6 +42,7 @@ namespace bytron {
      * @param [in]  src       Device pointer to BGRA source frame.
      * @param [out] dst       Device pointer to CHW float output (3 * dst_h * dst_w floats).
      * @param [in]  src_pitch Source row stride in bytes (typically src_w * 4).
+     * @param [in]  params    Letterbox transform from compute_letterbox(src, dst dims).
      * @param [in]  stream    CUDA stream for async execution.
      *
      * @note Kernel config: 32x8 thread blocks, grid covers (dst_w, dst_h).
@@ -51,6 +52,7 @@ namespace bytron {
         const std::uint8_t* src, float* dst,
         int src_w, int src_h, int src_pitch,
         int dst_w, int dst_h,
+        const LetterboxParams& params,
         cudaStream_t stream);
 
 }

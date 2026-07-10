@@ -36,7 +36,13 @@ namespace bytron {
         [[nodiscard]] int           width()        const noexcept { return width_; }
         [[nodiscard]] int           height()       const noexcept { return height_; }
 
-        void present();
+        /**
+         * @brief Push the DIB contents to the layered window.
+         * @param dirty Screen region to re-upload (nullptr = entire window).
+         *              Passing a tight rect keeps the GDI upload proportional
+         *              to changed content instead of the whole monitor.
+         */
+        void present(const RECT* dirty = nullptr);
         void poll_events();
 
         [[nodiscard]] bool should_close() const noexcept { return closed_; }

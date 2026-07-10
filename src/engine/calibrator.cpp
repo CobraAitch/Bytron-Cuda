@@ -3,6 +3,11 @@
  * @brief INT8 calibration image loading, preprocessing, and cache I/O.
  */
 
+// TRT 10.x deprecates IInt8EntropyCalibrator2 (implicit-quantization APIs);
+// this project still supports INT8 PTQ, so silence the deprecation locally.
+#pragma warning(push)
+#pragma warning(disable: 4996)
+
 #include "engine/calibrator.hpp"
 #include "preprocess/preprocess_kernels.cuh"
 #include "util/cuda_check.hpp"
@@ -130,7 +135,8 @@ namespace bytron {
 
                 launch_fused_preprocess_bgra(
                     static_cast<const std::uint8_t*>(device_raw_[buf]), dst_ptr,
-                    src_w, src_h, src_w * 4, input_w_, input_h_, stream_[buf]);
+                    src_w, src_h, src_w * 4, input_w_, input_h_,
+                    compute_letterbox(src_w, src_h, input_w_, input_h_), stream_[buf]);
             }
 
             for (int i = actual_batch; i < batch_size_; ++i) {
@@ -185,3 +191,5 @@ namespace bytron {
     }
 
 }
+
+#pragma warning(pop)

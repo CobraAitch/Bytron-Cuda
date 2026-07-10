@@ -1,17 +1,54 @@
 /**
  * @file overlay_sink.cpp
- * @brief OverlaySink CPU box rendering and Win32 layered window present loop.
+ * @brief OverlaySink incremental CPU box rendering and Win32 layered window present loop.
  */
 
 #include "output/overlay_sink.hpp"
 #include "util/cuda_check.hpp"
 
 #include <spdlog/spdlog.h>
-#include <cstring>
 #include <algorithm>
 #include <cstdint>
 
 namespace bytron {
+
+    namespace {
+        constexpr int           BOX_THICKNESS = 2;
+        constexpr std::uint32_t BOX_COLOR     = 0xFF00FF00u;  // Opaque green (BGRA).
+        constexpr std::uint32_t CLEAR_COLOR   = 0x00000000u;  // Fully transparent.
+
+        /**
+         * @brief Union of all clamped box rects from both detection sets.
+         * @return false when both sets contain no visible boxes.
+         *         @p out is a GDI RECT (right/bottom exclusive).
+         */
+        bool dirty_union(const std::vector<Detection>& a,
+                         const std::vector<Detection>& b,
+                         int w, int h, RECT& out) {
+            int x1 = w, y1 = h, x2 = -1, y2 = -1;
+
+            auto add = [&](const std::vector<Detection>& dets) {
+                for (const auto& det : dets) {
+                    int bx1 = std::max(0, static_cast<int>(det.box.x1));
+                    int by1 = std::max(0, static_cast<int>(det.box.y1));
+                    int bx2 = std::min(w - 1, static_cast<int>(det.box.x2));
+                    int by2 = std::min(h - 1, static_cast<int>(det.box.y2));
+                    if (bx1 > bx2 || by1 > by2) continue;
+
+                    x1 = std::min(x1, bx1);
+                    y1 = std::min(y1, by1);
+                    x2 = std::max(x2, bx2);
+                    y2 = std::max(y2, by2);
+                }
+            };
+            add(a);
+            add(b);
+
+            if (x2 < 0) return false;
+            out = RECT{ x1, y1, x2 + 1, y2 + 1 };
+            return true;
+        }
+    }
 
     OverlaySink::OverlaySink(int monitor_width, int monitor_height)
         : monitor_w_(monitor_width)
@@ -29,67 +66,81 @@ namespace bytron {
     void OverlaySink::on_frame(
         const FrameContext& ctx,
         void* /*device_frame*/,
-        int width, int height, int /*pitch*/,
-        cudaStream_t /*stream*/,
+        int /*width*/, int /*height*/, int /*pitch*/,
+        cudaStream_t stream,
         cudaEvent_t copy_done_event
     ) {
         if (display_thread_.get_stop_token().stop_requested()) return;
 
-        int idx;
         {
             std::lock_guard lock(mtx_);
-            idx = write_idx_;
-            write_idx_ = (write_idx_ + 1) % MAILBOX_SLOTS;
-        }
-        auto& mb = mailbox_[idx];
-        mb.detections = ctx.detections;
-        mb.src_width  = width;
-        mb.src_height = height;
-
-        if (copy_done_event)
-            cudaEventRecord(copy_done_event, nullptr);
-
-        {
-            std::lock_guard lock(mtx_);
-            pending_idx_ = idx;
+            latest_dets_.assign(ctx.detections.begin(), ctx.detections.end());
+            ++latest_seq_;
         }
         cv_.notify_one();
+
+        // This sink never reads the GPU frame; release the slot's raw_buffer
+        // as soon as the work already queued on its stream completes.
+        if (copy_done_event)
+            CUDA_CHECK(cudaEventRecord(copy_done_event, stream));
     }
 
     void OverlaySink::display_loop(std::stop_token stoken) {
         auto* overlay = window_.get();
 
+        std::vector<Detection> current;  ///< Boxes to draw this iteration.
+        std::vector<Detection> visible;  ///< Boxes on screen (erased next iteration).
+        std::uint64_t consumed_seq  = 0;
+        bool          first_present = true;
+
         while (!stoken.stop_requested()) {
-            int slot_idx;
+            bool has_frame = false;
             {
                 std::unique_lock lock(mtx_);
                 cv_.wait_for(lock, std::chrono::milliseconds(4), [&] {
-                    return pending_idx_ >= 0 || stoken.stop_requested();
+                    return latest_seq_ != consumed_seq || stoken.stop_requested();
                 });
                 if (stoken.stop_requested()) break;
 
-                if (pending_idx_ < 0) {
-                    overlay->poll_events();
-                    if (overlay->should_close()) {
-                        window_open_ = false;
-                        return;
-                    }
-                    continue;
+                if (latest_seq_ != consumed_seq) {
+                    consumed_seq = latest_seq_;
+                    current.assign(latest_dets_.begin(), latest_dets_.end());
+                    has_frame = true;
                 }
-                slot_idx = pending_idx_;
-                pending_idx_ = -1;
             }
 
-            auto& mb = mailbox_[slot_idx];
+            if (!has_frame) {
+                overlay->poll_events();
+                if (overlay->should_close()) {
+                    window_open_ = false;
+                    return;
+                }
+                continue;
+            }
 
             auto* pixels = overlay->pixels();
-            std::memset(pixels, 0, overlay->pixel_bytes());
+            const int w  = overlay->width();
+            const int h  = overlay->height();
 
-            render_boxes_cpu(pixels,
-                             overlay->width(), overlay->height(),
-                             mb.detections, 2);
+            // Erase previous boxes by redrawing their outlines transparent,
+            // then draw the new set — touches only box outlines instead of
+            // clearing the whole monitor-sized buffer every frame.
+            render_boxes_cpu(pixels, w, h, visible, BOX_THICKNESS, CLEAR_COLOR);
+            render_boxes_cpu(pixels, w, h, current, BOX_THICKNESS, BOX_COLOR);
 
-            overlay->present();
+            RECT dirty{};
+            const bool any_change = dirty_union(visible, current, w, h, dirty);
+
+            if (first_present) {
+                overlay->present();  // Full upload primes the layered window.
+                first_present = false;
+            } else if (any_change) {
+                overlay->present(&dirty);
+            } else {
+                overlay->poll_events();  // Nothing on screen changed.
+            }
+
+            visible.swap(current);
 
             if (overlay->should_close()) {
                 window_open_ = false;
@@ -101,10 +152,9 @@ namespace bytron {
     void OverlaySink::render_boxes_cpu(
         void* bgra_buffer, int buf_w, int buf_h,
         const std::vector<Detection>& detections,
-        int thickness
+        int thickness, std::uint32_t color
     ) {
         auto* pixels = static_cast<std::uint32_t*>(bgra_buffer);
-        constexpr std::uint32_t green = 0xFF00FF00u;
 
         for (const auto& det : detections) {
             int x1 = std::max(0, static_cast<int>(det.box.x1));
@@ -117,13 +167,11 @@ namespace bytron {
             for (int t = 0; t < thickness; ++t) {
                 int row_top = y1 + t;
                 if (row_top <= y2) {
-                    for (int x = x1; x <= x2; ++x)
-                        pixels[row_top * buf_w + x] = green;
+                    std::fill_n(pixels + row_top * buf_w + x1, x2 - x1 + 1, color);
                 }
                 int row_bot = y2 - t;
                 if (row_bot >= y1 + thickness) {
-                    for (int x = x1; x <= x2; ++x)
-                        pixels[row_bot * buf_w + x] = green;
+                    std::fill_n(pixels + row_bot * buf_w + x1, x2 - x1 + 1, color);
                 }
             }
 
@@ -131,10 +179,10 @@ namespace bytron {
                 for (int t = 0; t < thickness; ++t) {
                     int col_left = x1 + t;
                     if (col_left <= x2)
-                        pixels[y * buf_w + col_left] = green;
+                        pixels[y * buf_w + col_left] = color;
                     int col_right = x2 - t;
                     if (col_right >= x1 + thickness)
-                        pixels[y * buf_w + col_right] = green;
+                        pixels[y * buf_w + col_right] = color;
                 }
             }
         }

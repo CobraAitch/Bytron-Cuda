@@ -32,22 +32,26 @@ namespace bytron {
         auto required = static_cast<std::size_t>(max_detections_) * stride_;
         if (output_host.size() < required) return;
 
-        auto w = static_cast<float>(ctx.src_width);
-        auto h = static_cast<float>(ctx.src_height);
+        const float w = static_cast<float>(ctx.src_width);
+        const float h = static_cast<float>(ctx.src_height);
+        const float inv_scale = 1.0f / ctx.scale;
+        const float pad_x = ctx.pad_x;
+        const float pad_y = ctx.pad_y;
 
         for (int i = 0; i < max_detections_; ++i) {
             const float* det = output_host.data() + i * stride_;
-            if (det[schema_.confidence_idx] < conf_threshold_) continue;
+            const float conf = det[schema_.confidence_idx];
+            if (conf < conf_threshold_) continue;
 
             // Inverse letterbox: subtract padding, divide by scale, clamp to frame bounds.
             ctx.detections.push_back(Detection{
                 .box = BBox{
-                    std::clamp((det[schema_.x1_idx] - ctx.pad_x) / ctx.scale, 0.0f, w),
-                    std::clamp((det[schema_.y1_idx] - ctx.pad_y) / ctx.scale, 0.0f, h),
-                    std::clamp((det[schema_.x2_idx] - ctx.pad_x) / ctx.scale, 0.0f, w),
-                    std::clamp((det[schema_.y2_idx] - ctx.pad_y) / ctx.scale, 0.0f, h),
+                    std::clamp((det[schema_.x1_idx] - pad_x) * inv_scale, 0.0f, w),
+                    std::clamp((det[schema_.y1_idx] - pad_y) * inv_scale, 0.0f, h),
+                    std::clamp((det[schema_.x2_idx] - pad_x) * inv_scale, 0.0f, w),
+                    std::clamp((det[schema_.y2_idx] - pad_y) * inv_scale, 0.0f, h),
                 },
-                .confidence = det[schema_.confidence_idx],
+                .confidence = conf,
                 .class_id   = static_cast<int>(det[schema_.class_id_idx])
             });
         }

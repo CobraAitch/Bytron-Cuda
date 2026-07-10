@@ -13,6 +13,8 @@
 #include <span>
 #include <stdexcept>
 
+#include <windows.h>
+
 namespace bytron {
 
     Pipeline::Pipeline(const Config& cfg)
@@ -22,9 +24,9 @@ namespace bytron {
     {
         CUDA_CHECK(cudaSetDevice(cfg_.gpu_device));
 
-        capture_ = std::make_unique<DesktopCapture>(cfg_.monitor_index);
+        capture_ = make_capture_source(cfg_.capture_backend, cfg_.monitor_index);
         if (!capture_->is_open())
-            throw std::runtime_error("Failed to open desktop capture");
+            throw std::runtime_error("Failed to open screen capture");
 
         // Raise the CUDA device-level L2 persistent cache limit so TRT can
         // actually use the full requested size.  Without this, the driver
@@ -77,6 +79,16 @@ namespace bytron {
                                engine_->model_width(), engine_->model_height(),
                                engine_->max_detections(), engine_->output_stride());
             slots_[i].trt_context = engine_->create_context();
+
+            // Input shape and tensor addresses are fixed per slot; TRT keeps
+            // them across enqueues, so set them once here instead of per frame.
+            auto& ctx = slots_[i].trt_context;
+            if (!ctx->setInputShape(engine_->input_name(),
+                    nvinfer1::Dims4{1, 3, engine_->model_height(), engine_->model_width()}))
+                throw std::runtime_error("Failed to set TRT input shape on slot " + std::to_string(i));
+            if (!ctx->setTensorAddress(engine_->input_name(), slots_[i].input_buffer.ptr())
+                || !ctx->setTensorAddress(engine_->output_name(), slots_[i].output_buffer.ptr()))
+                throw std::runtime_error("Failed to set TRT tensor addresses on slot " + std::to_string(i));
         }
 
         capture_mailbox_.allocate(cfg_.max_frame_width, cfg_.max_frame_height);
@@ -93,10 +105,10 @@ namespace bytron {
 
         spdlog::info("Pipeline initialized: {} slots, model {}x{}, max {} detections, "
                      "CUDA graphs: {}, aux streams: {}, stream priorities: HIGH(inference)/NORMAL(capture), "
-                     "desktop BGRA capture, three-thread architecture",
+                     "capture: {}, three-thread architecture",
                      num_slots_, engine_->model_width(), engine_->model_height(),
                      engine_->max_detections(), use_cuda_graphs_ ? "ON" : "OFF",
-                     num_aux_streams_);
+                     num_aux_streams_, capture_->backend_name());
     }
 
     Pipeline::~Pipeline() {
@@ -147,6 +159,9 @@ namespace bytron {
     void Pipeline::capture_loop(std::stop_token stoken) {
         try {
             CUDA_CHECK(cudaSetDevice(cfg_.gpu_device));
+            // Capture feeds the whole pipeline; don't let background CPU load
+            // add scheduling jitter to frame acquisition.
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
             spdlog::debug("Capture thread started");
 
             int write_idx = 0;
@@ -156,18 +171,21 @@ namespace bytron {
 
                 CUDA_CHECK(cudaStreamWaitEvent(capture_stream_.get(), entry.read_done.get(), 0));
 
-                auto result = capture_->acquire_frame_blocking(
+                auto result = capture_->acquire_frame(
                     entry.frame_buf, capture_stream_.get(), 16);
 
                 switch (result) {
                     case AcquireResult::kNewFrame: {
                         entry.capture_done.record(capture_stream_.get());
-                        entry.width  = capture_->width();
-                        entry.height = capture_->height();
-                        entry.pitch  = capture_->pitch();
 
+                        // Entry metadata is written under the mailbox mutex so the
+                        // inference thread never reads torn width/height/pitch if
+                        // capture laps the mailbox.
                         {
                             std::lock_guard lock(capture_mailbox_.mtx);
+                            entry.width  = capture_->width();
+                            entry.height = capture_->height();
+                            entry.pitch  = capture_->pitch();
                             capture_mailbox_.latest_idx = write_idx;
                             ++capture_mailbox_.sequence;
                         }
@@ -210,9 +228,119 @@ namespace bytron {
         }
     }
 
+    void Pipeline::finalize_slot(PipelineSlot& slot, OutputSink& sink) {
+        const int idx = slot.index;
+        slot.ready_event.synchronize();
+
+        float frame_ms = CudaEvent::elapsed_ms(timing_[idx].start, timing_[idx].end);
+        {
+            std::lock_guard lock(metrics_mtx_);
+            total_latency_us_ += static_cast<std::uint64_t>(frame_ms * 1000.0f);
+            ++completed_frames_;
+
+            // Per-stage breakdown: snapshot latest eager-frame timings.
+            // Graph replays fuse all stages so intermediate events are invalid.
+            if (slot_eager_exec_[idx]) {
+                last_pre_ms_ = CudaEvent::elapsed_ms(timing_[idx].start, timing_[idx].preprocess_done);
+                last_trt_ms_ = CudaEvent::elapsed_ms(timing_[idx].preprocess_done, timing_[idx].trt_done);
+                last_d2h_ms_ = CudaEvent::elapsed_ms(timing_[idx].trt_done, timing_[idx].end);
+                ++eager_frames_;
+            }
+        }
+
+        harvest_and_deliver(slot, sink);
+    }
+
+    void Pipeline::launch_inference(PipelineSlot& slot, int w, int h, int pitch) {
+        const int idx = slot.index;
+        auto stream = slot.stream.get();
+        auto key = res_key(w, h);
+
+        // Periodically force an eager frame to refresh per-stage timing
+        // breakdown. At ~275 FPS one eager frame every 500 is <0.1% overhead.
+        static constexpr std::uint64_t PROFILE_INTERVAL = 500;
+        const bool force_profile = use_cuda_graphs_ && slot_warmed_up_[idx]
+                                && slot.frame_ctx.frame_id % PROFILE_INTERVAL == 0;
+
+        if (use_cuda_graphs_ && slot_warmed_up_[idx] && !force_profile) {
+            auto& cache = *graph_cache_[idx];
+            auto it = cache.map.find(key);
+
+            if (it == cache.map.end()) {
+                if (static_cast<int>(cache.map.size()) >= MAX_CACHED_GRAPHS)
+                    cache.evict_oldest();
+
+                auto& gs = cache.map[key];
+                capture_graph(slot, w, h, pitch, gs);
+                spdlog::debug("CUDA graph captured for slot {} ({}x{}), cache size {}",
+                              idx, w, h, cache.map.size());
+                it = cache.map.find(key);
+            }
+            cache.touch(key);
+
+            auto params = compute_letterbox(w, h, engine_->model_width(), engine_->model_height());
+            slot.frame_ctx.src_width  = w;
+            slot.frame_ctx.src_height = h;
+            slot.frame_ctx.src_pitch  = pitch;
+            slot.frame_ctx.scale = params.scale;
+            slot.frame_ctx.pad_x = static_cast<float>(params.pad_x);
+            slot.frame_ctx.pad_y = static_cast<float>(params.pad_y);
+
+            CUDA_CHECK(cudaGraphLaunch(it->second.exec, stream));
+            slot_eager_exec_[idx] = false;
+            return;
+        }
+
+        preprocessor_->preprocess_bgra(
+            slot.raw_buffer, w, h, pitch,
+            slot.input_buffer, slot.frame_ctx, stream);
+
+        timing_[idx].preprocess_done.record(stream);
+
+        // Input shape and tensor addresses were bound once at construction.
+        if (!slot.trt_context->enqueueV3(stream))
+            throw std::runtime_error("TRT enqueueV3 failed on slot " + std::to_string(idx));
+
+        // Join aux streams so trt_done reflects full inference time
+        // including aux stream work. Without this, trt_done fires when
+        // the main stream's portion completes and the D2H memcpy
+        // absorbs residual aux inference time.
+        if (num_aux_streams_ > 0) {
+            auto& aux  = slot_aux_streams_[idx];
+            auto& sync = slot_aux_sync_events_[idx];
+            for (int a = 0; a < num_aux_streams_; ++a) {
+                sync[a].record(aux[a]);
+                CUDA_CHECK(cudaStreamWaitEvent(stream, sync[a].get(), 0));
+            }
+        }
+
+        timing_[idx].trt_done.record(stream);
+
+        auto output_bytes = std::size_t(engine_->max_detections()) * engine_->output_stride() * sizeof(float);
+        slot.output_buffer.copy_to_host_async(slot.output_pinned.ptr(), output_bytes, stream);
+
+        // Warm-up frames include TRT auto-tuning which distorts
+        // per-stage timings — exclude them from profiling metrics.
+        slot_eager_exec_[idx] = !(use_cuda_graphs_ && !slot_warmed_up_[idx]);
+
+        // Warm-up: run one eager pass before graph capture to let TRT
+        // auto-tune kernels. Sync ensures all work completes before capture.
+        if (use_cuda_graphs_ && !slot_warmed_up_[idx]) {
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            slot_warmed_up_[idx] = true;
+            auto& cache = *graph_cache_[idx];
+            auto& gs = cache.map[key];
+            capture_graph(slot, w, h, pitch, gs);
+            cache.touch(key);
+            spdlog::debug("CUDA graph captured for slot {} ({}x{})", idx, w, h);
+        }
+    }
+
     void Pipeline::inference_loop(std::stop_token stoken, OutputSink& sink) {
       try {
         CUDA_CHECK(cudaSetDevice(cfg_.gpu_device));
+        // Inference paces the whole pipeline; shield it from CPU scheduling jitter.
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
         spdlog::debug("Inference thread started");
 
         Timer fps_timer;
@@ -220,7 +348,7 @@ namespace bytron {
         std::vector<bool> slot_in_flight(num_slots_, false);
 
         while (!stoken.stop_requested() && sink.should_continue()) {
-            int read_idx;
+            // Wait until at least one unconsumed capture exists (or capture died).
             {
                 std::unique_lock lock(capture_mailbox_.mtx);
                 if (!capture_mailbox_.cv.wait(lock, stoken, [&] {
@@ -232,39 +360,32 @@ namespace bytron {
                 if (capture_dead_.load(std::memory_order_acquire)
                     && capture_mailbox_.sequence <= capture_mailbox_.consumed_sequence)
                     break;
-
-                read_idx = capture_mailbox_.latest_idx;
-                capture_mailbox_.consumed_sequence = capture_mailbox_.sequence;
             }
 
             auto& slot = slots_[next_slot];
-            int idx = slot.index;
 
-            if (slot_in_flight[idx]) {
-                slot.ready_event.synchronize();
+            // Finalizing the oldest in-flight slot can block on the GPU, so do
+            // it *before* choosing which capture to process — the mailbox may
+            // receive newer frames while we wait.
+            if (slot_in_flight[slot.index]) {
+                finalize_slot(slot, sink);
+                slot_in_flight[slot.index] = false;
+            }
 
-                float frame_ms = CudaEvent::elapsed_ms(timing_[idx].start, timing_[idx].end);
-                {
-                    std::lock_guard lock(metrics_mtx_);
-                    total_latency_us_ += static_cast<std::uint64_t>(frame_ms * 1000.0f);
-                    ++completed_frames_;
-
-                    // Per-stage breakdown: snapshot latest eager-frame timings.
-                    // Graph replays fuse all stages so intermediate events are invalid.
-                    if (slot_eager_exec_[idx]) {
-                        last_pre_ms_ = CudaEvent::elapsed_ms(timing_[idx].start, timing_[idx].preprocess_done);
-                        last_trt_ms_ = CudaEvent::elapsed_ms(timing_[idx].preprocess_done, timing_[idx].trt_done);
-                        last_d2h_ms_ = CudaEvent::elapsed_ms(timing_[idx].trt_done, timing_[idx].end);
-                        ++eager_frames_;
-                    }
-                }
-
-                harvest_and_deliver(slot, sink);
-                slot_in_flight[idx] = false;
+            // Consume the freshest capture entry (latest-wins mailbox semantics).
+            int read_idx, w, h, pitch;
+            {
+                std::lock_guard lock(capture_mailbox_.mtx);
+                read_idx = capture_mailbox_.latest_idx;
+                capture_mailbox_.consumed_sequence = capture_mailbox_.sequence;
+                const auto& e = capture_mailbox_.entries[read_idx];
+                w     = e.width;
+                h     = e.height;
+                pitch = e.pitch;
             }
 
             auto stream = slot.stream.get();
-            timing_[idx].start.record(stream);
+            timing_[slot.index].start.record(stream);
 
             // Guard: wait until the display sink has finished copying this slot's
             // raw_buffer before we overwrite it with a new capture frame.
@@ -275,109 +396,21 @@ namespace bytron {
             auto& entry = capture_mailbox_.entries[read_idx];
             CUDA_CHECK(cudaStreamWaitEvent(stream, entry.capture_done.get(), 0));
 
-            auto frame_bytes = std::size_t(entry.width) * entry.height * 4;
+            auto frame_bytes = std::size_t(w) * h * 4;
             CUDA_CHECK(cudaMemcpyAsync(
                 slot.raw_buffer.ptr(), entry.frame_buf.ptr(),
                 frame_bytes, cudaMemcpyDeviceToDevice, stream));
 
             entry.read_done.record(stream);
 
-            int w     = entry.width;
-            int h     = entry.height;
-            int pitch = entry.pitch;
-
             slot.frame_ctx.frame_id   = frame_counter_++;
-            slot.frame_ctx.slot_index = idx;
+            slot.frame_ctx.slot_index = slot.index;
 
-            auto key = res_key(w, h);
+            launch_inference(slot, w, h, pitch);
 
-            // Periodically force an eager frame to refresh per-stage timing
-            // breakdown. At ~275 FPS one eager frame every 500 is <0.1% overhead.
-            static constexpr std::uint64_t PROFILE_INTERVAL = 500;
-            bool force_profile = use_cuda_graphs_ && slot_warmed_up_[idx]
-                              && frame_counter_ > 0
-                              && ((frame_counter_ - 1) % PROFILE_INTERVAL == 0);
-
-            if (use_cuda_graphs_ && slot_warmed_up_[idx] && !force_profile) {
-                auto& cache = *graph_cache_[idx];
-                auto it = cache.map.find(key);
-
-                if (it == cache.map.end()) {
-                    if (static_cast<int>(cache.map.size()) >= MAX_CACHED_GRAPHS)
-                        cache.evict_oldest();
-
-                    auto& gs = cache.map[key];
-                    capture_graph(slot, w, h, pitch, gs);
-                    spdlog::debug("CUDA graph captured for slot {} ({}x{}), cache size {}",
-                                  idx, w, h, cache.map.size());
-                    it = cache.map.find(key);
-                }
-                cache.touch(key);
-
-                auto params = compute_letterbox(w, h, engine_->model_width(), engine_->model_height());
-                slot.frame_ctx.src_width  = w;
-                slot.frame_ctx.src_height = h;
-                slot.frame_ctx.src_pitch  = pitch;
-                slot.frame_ctx.scale = params.scale;
-                slot.frame_ctx.pad_x = static_cast<float>(params.pad_x);
-                slot.frame_ctx.pad_y = static_cast<float>(params.pad_y);
-
-                CUDA_CHECK(cudaGraphLaunch(it->second.exec, stream));
-                slot_eager_exec_[idx] = false;
-            } else {
-                preprocessor_->preprocess_bgra(
-                    slot.raw_buffer, w, h, entry.pitch,
-                    slot.input_buffer, slot.frame_ctx, stream);
-
-                timing_[idx].preprocess_done.record(stream);
-
-                auto& ctx = slot.trt_context;
-                ctx->setInputShape(engine_->input_name(),
-                    nvinfer1::Dims4{1, 3, engine_->model_height(), engine_->model_width()});
-                ctx->setTensorAddress(engine_->input_name(), slot.input_buffer.ptr());
-                ctx->setTensorAddress(engine_->output_name(), slot.output_buffer.ptr());
-
-                if (!ctx->enqueueV3(stream))
-                    throw std::runtime_error("TRT enqueueV3 failed on slot " + std::to_string(idx));
-
-                // Join aux streams so trt_done reflects full inference time
-                // including aux stream work. Without this, trt_done fires when
-                // the main stream's portion completes and the D2H memcpy
-                // absorbs residual aux inference time.
-                if (num_aux_streams_ > 0) {
-                    auto& aux  = slot_aux_streams_[idx];
-                    auto& sync = slot_aux_sync_events_[idx];
-                    for (int a = 0; a < num_aux_streams_; ++a) {
-                        sync[a].record(aux[a]);
-                        CUDA_CHECK(cudaStreamWaitEvent(stream, sync[a].get(), 0));
-                    }
-                }
-
-                timing_[idx].trt_done.record(stream);
-
-                auto output_bytes = std::size_t(engine_->max_detections()) * engine_->output_stride() * sizeof(float);
-                slot.output_buffer.copy_to_host_async(slot.output_pinned.ptr(), output_bytes, stream);
-
-                // Warm-up frames include TRT auto-tuning which distorts
-                // per-stage timings — exclude them from profiling metrics.
-                slot_eager_exec_[idx] = !(use_cuda_graphs_ && !slot_warmed_up_[idx]);
-
-                // Warm-up: run one eager pass before graph capture to let TRT
-                // auto-tune kernels. Sync ensures all work completes before capture.
-                if (use_cuda_graphs_ && !slot_warmed_up_[idx]) {
-                    CUDA_CHECK(cudaStreamSynchronize(stream));
-                    slot_warmed_up_[idx] = true;
-                    auto& cache = *graph_cache_[idx];
-                    auto& gs = cache.map[key];
-                    capture_graph(slot, w, h, pitch, gs);
-                    cache.touch(key);
-                    spdlog::debug("CUDA graph captured for slot {} ({}x{})", idx, w, h);
-                }
-            }
-
-            timing_[idx].end.record(stream);
+            timing_[slot.index].end.record(stream);
             slot.ready_event.record(stream);
-            slot_in_flight[idx] = true;
+            slot_in_flight[slot.index] = true;
             next_slot = (next_slot + 1) % num_slots_;
 
             if (completed_frames_ > 0 && completed_frames_ % 100 == 0) {
@@ -397,27 +430,11 @@ namespace bytron {
             }
         }
 
-        // Drain in-flight slots.
-        for (int i = 0; i < num_slots_; ++i) {
-            if (slot_in_flight[i]) {
-                slots_[i].ready_event.synchronize();
-
-                float frame_ms = CudaEvent::elapsed_ms(timing_[i].start, timing_[i].end);
-                {
-                    std::lock_guard lock(metrics_mtx_);
-                    total_latency_us_ += static_cast<std::uint64_t>(frame_ms * 1000.0f);
-                    ++completed_frames_;
-
-                    if (slot_eager_exec_[i]) {
-                        last_pre_ms_ = CudaEvent::elapsed_ms(timing_[i].start, timing_[i].preprocess_done);
-                        last_trt_ms_ = CudaEvent::elapsed_ms(timing_[i].preprocess_done, timing_[i].trt_done);
-                        last_d2h_ms_ = CudaEvent::elapsed_ms(timing_[i].trt_done, timing_[i].end);
-                        ++eager_frames_;
-                    }
-                }
-
-                harvest_and_deliver(slots_[i], sink);
-            }
+        // Drain in-flight slots in FIFO order so frames are delivered oldest-first.
+        for (int n = 0; n < num_slots_; ++n) {
+            int i = (next_slot + n) % num_slots_;
+            if (slot_in_flight[i])
+                finalize_slot(slots_[i], sink);
         }
 
         {
@@ -448,10 +465,17 @@ namespace bytron {
         slot_aux_streams_.resize(num_slots_);
         slot_aux_sync_events_.resize(num_slots_);
 
+        // Aux streams carry TRT layer-parallel kernels on the critical path:
+        // create them non-blocking (never serialize with the legacy default
+        // stream) and at the same high priority as the slot streams.
+        int lo = 0, hi = 0;
+        CUDA_CHECK(cudaDeviceGetStreamPriorityRange(&lo, &hi));
+
         for (int i = 0; i < num_slots_; ++i) {
             slot_aux_streams_[i].resize(num_aux_streams_);
             for (int j = 0; j < num_aux_streams_; ++j)
-                CUDA_CHECK(cudaStreamCreate(&slot_aux_streams_[i][j]));
+                CUDA_CHECK(cudaStreamCreateWithPriority(
+                    &slot_aux_streams_[i][j], cudaStreamNonBlocking, hi));
 
             // Non-timing events for joining aux stream work back to the
             // main stream before profiling event recording.
@@ -481,11 +505,7 @@ namespace bytron {
     void Pipeline::capture_graph(PipelineSlot& slot, int src_w, int src_h, int src_pitch, GraphState& gs) {
         auto stream = slot.stream.get();
 
-        auto& ctx = slot.trt_context;
-        ctx->setInputShape(engine_->input_name(),
-                           nvinfer1::Dims4{1, 3, engine_->model_height(), engine_->model_width()});
-        ctx->setTensorAddress(engine_->input_name(), slot.input_buffer.ptr());
-        ctx->setTensorAddress(engine_->output_name(), slot.output_buffer.ptr());
+        // Input shape and tensor addresses were bound once at construction.
 
         // Relaxed mode: only streams explicitly forked from the capture stream
         // are included in the graph. This is required for TRT multi-stream —
@@ -509,9 +529,10 @@ namespace bytron {
             static_cast<float*>(slot.input_buffer.ptr()),
             src_w, src_h, src_pitch,
             engine_->model_width(), engine_->model_height(),
+            compute_letterbox(src_w, src_h, engine_->model_width(), engine_->model_height()),
             stream);
 
-        if (!ctx->enqueueV3(stream)) {
+        if (!slot.trt_context->enqueueV3(stream)) {
             // Abort graph capture to leave the stream in a valid state.
             cudaGraph_t aborted = nullptr;
             cudaStreamEndCapture(stream, &aborted);

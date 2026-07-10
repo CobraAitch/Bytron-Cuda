@@ -29,7 +29,7 @@ namespace bytron {
 
         launch_fused_preprocess_bgra(
             src.as<const std::uint8_t>(), dst.as<float>(),
-            src_w, src_h, src_pitch, model_w_, model_h_, stream);
+            src_w, src_h, src_pitch, model_w_, model_h_, params, stream);
     }
 
 }
