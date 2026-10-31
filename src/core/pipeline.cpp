@@ -365,7 +365,7 @@ namespace bytron {
             auto& slot = slots_[next_slot];
 
             // Finalizing the oldest in-flight slot can block on the GPU, so do
-            // it *before* choosing which capture to process: the mailbox may
+            // it *before* choosing which capture to process — the mailbox may
             // receive newer frames while we wait.
             if (slot_in_flight[slot.index]) {
                 finalize_slot(slot, sink);
