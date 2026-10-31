@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bytron benchmark stimulus</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<!--
+  Windows only delivers a captured frame when the screen changes, so an idle
+  desktop measures the desktop rather than the pipeline. This page repaints on
+  every display refresh to give the capture backends a steady frame stream.
+-->
+<canvas id="c"></canvas>
+<script>
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d", { alpha: false });
+
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  let frame = 0;
+  function paint() {
+    frame += 1;
+    ctx.fillStyle = `hsl(${frame % 360} 70% 50%)`;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    requestAnimationFrame(paint);
+  }
+  requestAnimationFrame(paint);
+</script>
+</body>
+</html>
