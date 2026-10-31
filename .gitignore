@@ -22,3 +22,6 @@ vcpkg_installed/
 
 # Windows artifacts
 nul
+
+# Python
+__pycache__/

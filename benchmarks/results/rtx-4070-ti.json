@@ -1,0 +1,255 @@
+{
+  "environment": {
+    "date": "2026-10-31",
+    "gpu": "NVIDIA GeForce RTX 4070 Ti",
+    "driver": "616.92",
+    "gpu_memory": "12282 MiB",
+    "cpu": "Intel(R) Core(TM) i9-14900KF",
+    "os": "Microsoft Windows 11 Pro",
+    "refresh_hz": 240,
+    "platform": "AMD64",
+    "model": "yolo26m"
+  },
+  "seconds_per_run": 20,
+  "repeats": 3,
+  "configs": [
+    {
+      "id": "graph-dxgi-2",
+      "capture": "dxgi",
+      "slots": 2,
+      "graphs": true,
+      "fps": 267.3,
+      "fps_min": 254.8,
+      "fps_max": 285.5,
+      "gpu_ms": 1.66,
+      "gpu_ms_min": 1.63,
+      "gpu_ms_max": 1.69,
+      "clock_mhz": 2820,
+      "runs": [
+        {
+          "frames": 5600,
+          "fps": 285.5,
+          "gpu_ms": 1.69,
+          "clock_mhz": 2820
+        },
+        {
+          "frames": 5000,
+          "fps": 254.8,
+          "gpu_ms": 1.63,
+          "clock_mhz": 2820
+        },
+        {
+          "frames": 5100,
+          "fps": 261.5,
+          "gpu_ms": 1.67,
+          "clock_mhz": 2820
+        }
+      ]
+    },
+    {
+      "id": "graph-dxgi-3",
+      "capture": "dxgi",
+      "slots": 3,
+      "graphs": true,
+      "fps": 267.8,
+      "fps_min": 244.1,
+      "fps_max": 292.1,
+      "gpu_ms": 1.65,
+      "gpu_ms_min": 1.61,
+      "gpu_ms_max": 1.71,
+      "clock_mhz": 2820,
+      "runs": [
+        {
+          "frames": 5300,
+          "fps": 267.1,
+          "gpu_ms": 1.64,
+          "clock_mhz": 2820
+        },
+        {
+          "frames": 4800,
+          "fps": 244.1,
+          "gpu_ms": 1.61,
+          "clock_mhz": 2820
+        },
+        {
+          "frames": 5800,
+          "fps": 292.1,
+          "gpu_ms": 1.71,
+          "clock_mhz": 2820
+        }
+      ]
+    },
+    {
+      "id": "graph-dxgi-4",
+      "capture": "dxgi",
+      "slots": 4,
+      "graphs": true,
+      "fps": 271.2,
+      "fps_min": 263.3,
+      "fps_max": 281.7,
+      "gpu_ms": 1.64,
+      "gpu_ms_min": 1.6,
+      "gpu_ms_max": 1.67,
+      "clock_mhz": 2820,
+      "runs": [
+        {
+          "frames": 5200,
+          "fps": 263.3,
+          "gpu_ms": 1.6,
+          "clock_mhz": 2820
+        },
+        {
+          "frames": 5300,
+          "fps": 268.7,
+          "gpu_ms": 1.66,
+          "clock_mhz": 2820
+        },
+        {
+          "frames": 5500,
+          "fps": 281.7,
+          "gpu_ms": 1.67,
+          "clock_mhz": 2820
+        }
+      ]
+    },
+    {
+      "id": "eager-dxgi-3",
+      "capture": "dxgi",
+      "slots": 3,
+      "graphs": false,
+      "fps": 254.1,
+      "fps_min": 247.3,
+      "fps_max": 261.0,
+      "gpu_ms": 2.45,
+      "gpu_ms_min": 2.36,
+      "gpu_ms_max": 2.57,
+      "clock_mhz": 2820,
+      "stages_ms": {
+        "preprocess": 0.03,
+        "inference": 2.28,
+        "readback": 0.0
+      },
+      "runs": [
+        {
+          "frames": 5000,
+          "fps": 254.1,
+          "gpu_ms": 2.43,
+          "stages_ms": {
+            "preprocess": 0.03,
+            "inference": 2.27,
+            "readback": 0.0
+          },
+          "clock_mhz": 2820
+        },
+        {
+          "frames": 5200,
+          "fps": 261.0,
+          "gpu_ms": 2.57,
+          "stages_ms": {
+            "preprocess": 0.03,
+            "inference": 2.35,
+            "readback": 0.0
+          },
+          "clock_mhz": 2820
+        },
+        {
+          "frames": 4900,
+          "fps": 247.3,
+          "gpu_ms": 2.36,
+          "stages_ms": {
+            "preprocess": 0.03,
+            "inference": 2.23,
+            "readback": 0.0
+          },
+          "clock_mhz": 2820
+        }
+      ]
+    },
+    {
+      "id": "graph-wgc-3",
+      "capture": "wgc",
+      "slots": 3,
+      "graphs": true,
+      "fps": 60.0,
+      "fps_min": 60.0,
+      "fps_max": 60.0,
+      "gpu_ms": 3.39,
+      "gpu_ms_min": 3.29,
+      "gpu_ms_max": 3.46,
+      "clock_mhz": 1235,
+      "runs": [
+        {
+          "frames": 1100,
+          "fps": 60.0,
+          "gpu_ms": 3.41,
+          "clock_mhz": 1185
+        },
+        {
+          "frames": 1100,
+          "fps": 60.0,
+          "gpu_ms": 3.46,
+          "clock_mhz": 1290
+        },
+        {
+          "frames": 1000,
+          "fps": 60.0,
+          "gpu_ms": 3.29,
+          "clock_mhz": 1230
+        }
+      ]
+    },
+    {
+      "id": "eager-wgc-3",
+      "capture": "wgc",
+      "slots": 3,
+      "graphs": false,
+      "fps": 60.0,
+      "fps_min": 60.0,
+      "fps_max": 60.0,
+      "gpu_ms": 3.74,
+      "gpu_ms_min": 3.42,
+      "gpu_ms_max": 3.92,
+      "clock_mhz": 1280,
+      "stages_ms": {
+        "preprocess": 0.04,
+        "inference": 3.8,
+        "readback": 0.01
+      },
+      "runs": [
+        {
+          "frames": 1100,
+          "fps": 60.0,
+          "gpu_ms": 3.92,
+          "stages_ms": {
+            "preprocess": 0.04,
+            "inference": 3.98,
+            "readback": 0.01
+          },
+          "clock_mhz": 1200
+        },
+        {
+          "frames": 1100,
+          "fps": 60.0,
+          "gpu_ms": 3.42,
+          "stages_ms": {
+            "preprocess": 0.05,
+            "inference": 3.59,
+            "readback": 0.0
+          },
+          "clock_mhz": 1350
+        },
+        {
+          "frames": 1100,
+          "fps": 60.0,
+          "gpu_ms": 3.88,
+          "stages_ms": {
+            "preprocess": 0.04,
+            "inference": 3.84,
+            "readback": 0.01
+          },
+          "clock_mhz": 1290
+        }
+      ]
+    }
+  ]
+}

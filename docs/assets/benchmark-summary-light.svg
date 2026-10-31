@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 132" width="860" height="132" role="img" aria-labelledby="summary-t summary-d">
+<title id="summary-t">Bytron benchmark summary, RTX 4070 Ti, yolo26m at 640x640, FP16, 2026-10-31</title>
+<desc id="summary-d">Sustained throughput: 240 fps, DXGI capture, 240 Hz display; GPU time per frame: 1.65 ms, At that rate, with graph replay; Less GPU time: 33%, Graph replay vs eager launch</desc>
+<rect width="860" height="132" fill="#ffffff"/>
+<g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<text x="28.0" y="66" fill="#1f2328" font-size="36" font-weight="600" text-anchor="start">240 fps</text>
+<text x="28.0" y="92" fill="#1f2328" font-size="13" font-weight="600" text-anchor="start">Sustained throughput</text>
+<text x="28.0" y="110" fill="#59636e" font-size="12" font-weight="400" text-anchor="start">DXGI capture, 240 Hz display</text>
+<line x1="290.6666666666667" y1="24" x2="290.6666666666667" y2="108" stroke="#e4e8ec"/>
+<text x="314.6666666666667" y="66" fill="#1f2328" font-size="36" font-weight="600" text-anchor="start">1.65 ms</text>
+<text x="314.6666666666667" y="92" fill="#1f2328" font-size="13" font-weight="600" text-anchor="start">GPU time per frame</text>
+<text x="314.6666666666667" y="110" fill="#59636e" font-size="12" font-weight="400" text-anchor="start">At that rate, with graph replay</text>
+<line x1="577.3333333333334" y1="24" x2="577.3333333333334" y2="108" stroke="#e4e8ec"/>
+<text x="601.3333333333334" y="66" fill="#1f2328" font-size="36" font-weight="600" text-anchor="start">33%</text>
+<text x="601.3333333333334" y="92" fill="#1f2328" font-size="13" font-weight="600" text-anchor="start">Less GPU time</text>
+<text x="601.3333333333334" y="110" fill="#59636e" font-size="12" font-weight="400" text-anchor="start">Graph replay vs eager launch</text>
+</g>
+</svg>
