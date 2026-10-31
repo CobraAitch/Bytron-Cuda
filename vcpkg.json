@@ -10,5 +10,5 @@
     "glfw3",
     "gtest"
   ],
-  "builtin-baseline": "dbc1677d47a2dd29f8a1e0eab80b5b43116e0165"
+  "builtin-baseline": "9eec002df1cd109f8f104cd966a763daf9751489"
 }
