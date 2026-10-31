@@ -3,17 +3,34 @@
 </p>
 
 <p align="center">
+  <a href="https://cobraaitch.github.io/Bytron-Cuda/"><b>Website</b></a>
+  &nbsp;&middot;&nbsp;
+  <a href="docs/architecture.md"><b>Architecture</b></a>
+  &nbsp;&middot;&nbsp;
+  <a href="docs/benchmarks.md"><b>Benchmarks</b></a>
+  &nbsp;&middot;&nbsp;
+  <a href="docs/configuration.md"><b>Configuration</b></a>
+  &nbsp;&middot;&nbsp;
+  <a href="CHANGELOG.md"><b>Changelog</b></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/CobraAitch/Bytron-Cuda/actions/workflows/ci.yml"><img src="https://github.com/CobraAitch/Bytron-Cuda/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="https://github.com/CobraAitch/Bytron-Cuda/actions/workflows/codeql.yml"><img src="https://github.com/CobraAitch/Bytron-Cuda/actions/workflows/codeql.yml/badge.svg?branch=main" alt="CodeQL status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/CobraAitch/Bytron-Cuda" alt="License"></a>
   <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white" alt="C++20">
   <img src="https://img.shields.io/badge/CUDA-13.1-76B900?logo=nvidia&logoColor=white" alt="CUDA 13.1">
   <img src="https://img.shields.io/badge/TensorRT-10.15-76B900?logo=nvidia&logoColor=white" alt="TensorRT 10.15">
-  <img src="https://img.shields.io/badge/platform-Windows%2011-0078D4" alt="Windows 11">
 </p>
 
 Bytron runs a YOLO26 detector on whatever is on your screen and draws the results back on top of it. It captures the desktop, runs each frame through TensorRT on your NVIDIA GPU, and shows the boxes on a transparent, click-through overlay.
 
 Frames stay in GPU memory from capture to inference. Only the detection results are copied back to the CPU.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-summary-dark.svg">
+  <img src="docs/assets/benchmark-summary-light.svg" alt="Benchmark summary. The figures are in docs/benchmarks.md." width="100%">
+</picture>
 
 ## Features
 
@@ -26,20 +43,25 @@ Frames stay in GPU memory from capture to inference. Only the detection results 
 - **FP16 or INT8.** INT8 uses entropy calibration on your own images.
 - **Configurable output layout.** A small schema maps tensor fields to box corners, confidence and class, so other NMS-free models can be used without code changes.
 
-## How it works
+## Architecture
 
-```mermaid
-flowchart LR
-    A["Screen capture<br/>WGC or DXGI"] --> B["Mailbox<br/>newest frame wins"]
-    subgraph G["GPU: 2 to 4 frames in flight"]
-        C["Preprocess kernel"] --> D["TensorRT inference"]
-    end
-    B --> C
-    D --> E["Postprocess on CPU"]
-    E --> F["Overlay, Vulkan window<br/>or headless"]
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg">
+  <img src="docs/assets/architecture-light.svg" alt="Bytron pipeline. Frames move from the desktop through a capture backend and a three-entry mailbox into two to four pipeline slots, each running copy, preprocess, TensorRT and readback. Results are postprocessed on the CPU and delivered to an output." width="100%">
+</picture>
 
 A capture thread keeps a three-entry mailbox filled with the latest frames. An inference thread cycles through pipeline slots, and each slot owns the GPU resources for one frame. The [architecture notes](docs/architecture.md) cover threading, synchronization and graph capture in detail.
+
+## Performance
+
+Throughput is limited by capture rather than the GPU. GPU time per frame depends on load, because the GPU runs at lower clocks at lower frame rates.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-gpu-time-dark.svg">
+  <img src="docs/assets/benchmark-gpu-time-light.svg" alt="GPU time per frame for each configuration. The values are in docs/benchmarks.md." width="100%">
+</picture>
+
+For displays above 60 Hz, use `--capture dxgi`. The [benchmark report](docs/benchmarks.md) has the method, the raw results and the known limitations, and you can reproduce it with one command.
 
 ## Requirements
 
@@ -93,8 +115,8 @@ YOLO("yolo26m.pt").export(format="onnx", nms=False)
 # Transparent overlay on the primary monitor
 .\out\x64-release\Release\bytron.exe --onnx yolo26m.onnx
 
-# Second monitor with a stricter confidence threshold
-.\out\x64-release\Release\bytron.exe --onnx yolo26m.onnx --monitor 1 --conf 0.4
+# High refresh display, with a stricter confidence threshold
+.\out\x64-release\Release\bytron.exe --onnx yolo26m.onnx --capture dxgi --conf 0.4
 
 # Full-frame Vulkan window instead of the overlay
 .\out\x64-release\Release\bytron.exe --onnx yolo26m.onnx --no-overlay
@@ -123,27 +145,26 @@ The first run builds a TensorRT engine from the ONNX file, which can take severa
 
 For a config file, start from [config.example.json](config.example.json). The [configuration reference](docs/configuration.md) lists every key.
 
-## Tests and benchmarks
+## Known limitations
 
-The `ci` preset builds only the CPU-side tests and benchmarks. It needs Visual Studio and vcpkg, but no GPU, CUDA or TensorRT.
+- Windows only, and one monitor per process.
+- Capture buffers are sized for 3840 by 2160.
+- Boxes are drawn without class names.
+- Windows.Graphics.Capture delivered 60 fps on a 240 Hz display in testing.
+- DXGI counts cursor-only updates as frames.
+- End-to-end latency from screen to overlay has not been measured.
+
+See [troubleshooting](docs/troubleshooting.md) for common problems and fixes.
+
+## Development
+
+The `ci` preset builds the CPU-side tests and benchmarks. It needs Visual Studio and vcpkg, but no GPU, CUDA or TensorRT.
 
 ```powershell
 cmake --preset ci
 cmake --build --preset ci
 ctest --preset ci
-.\out\ci\Release\bytron_bench.exe
 ```
-
-The per-frame CPU work is small. These numbers come from a Release build on an Intel Core i9-14900KF.
-
-| Benchmark | Time per call |
-| --- | --- |
-| `compute_letterbox` | 1.8 ns |
-| `Postprocessor::process`, 300 detections | 245 ns |
-
-At runtime, Bytron logs FPS and mean GPU latency every 100 frames. Run with `--no-cuda-graphs` to see a per-stage split for preprocessing, inference and the copy back to the host.
-
-## Project layout
 
 ```text
 include/bytron/   Public types
@@ -155,7 +176,9 @@ src/postprocess/  Confidence filter and inverse letterbox
 src/output/       Overlay, Vulkan display and callback sinks
 src/util/         Config, logging and timers
 tests/            GoogleTest unit tests
-benchmarks/       CPU micro-benchmarks
+benchmarks/       CPU micro-benchmarks and the GPU benchmark harness
+docs/             Architecture, configuration, benchmarks and troubleshooting
+site/             Project website
 ```
 
 ## Contributing

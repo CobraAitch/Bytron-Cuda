@@ -23,6 +23,7 @@ ctest --preset ci
 - **Run the tests.** `ctest --preset ci` has to pass.
 - **Run the app for GPU changes.** CI has no GPU, so it cannot cover capture, inference or output code. Say in the pull request what you tested and on which GPU.
 - **Add tests for CPU logic.** New math, parsing or validation should come with a unit test in `tests/`.
+- **Measure performance changes.** Run `benchmarks/gpu_bench.py` before and after, and include both results.
 - **Update the docs.** If a flag, config key or behavior changes, update the README or `docs/`, and add a line to [CHANGELOG.md](CHANGELOG.md) under Unreleased.
 
 ## Code style
