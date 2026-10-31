@@ -2,6 +2,11 @@
 
 Bytron is built around one goal: show detections for what is on screen now, not for what was on screen a few frames ago. Most design choices below follow from that.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
+  <img src="assets/architecture-light.svg" alt="Bytron pipeline overview. Frames stay in GPU memory from capture to readback, and only detection results reach the host." width="100%">
+</picture>
+
 ## Threads and data flow
 
 ```mermaid
@@ -56,7 +61,7 @@ The inference thread walks the slots in order. For each one it:
 2. Takes the newest capture from the mailbox. It does this after the wait, so frames that arrived during the wait are not missed.
 3. Copies the capture into the slot and launches preprocessing, inference and the copy back to the host.
 
-The thread only blocks on the GPU when the oldest frame is still running. More slots raise throughput, because the GPU is never idle waiting for the CPU. They also add latency, because each frame waits longer in line. The default of three is a balance between the two, and the pipeline clamps the value to the range 2 to 4.
+The thread only blocks on the GPU when the oldest frame is still running. More slots raise throughput, because the GPU is never idle waiting for the CPU. They also add latency, because each frame waits longer in line. The default of three is a balance between the two, and the pipeline clamps the value to the range 2 to 4. Slots only matter when frames overlap. In the [benchmarks](benchmarks.md), mean GPU time stayed far below the frame interval, and the slot count made no measurable difference.
 
 ## Preprocessing
 
@@ -65,6 +70,8 @@ One CUDA kernel does bilinear resize, letterbox padding, BGRA to RGB, normalizat
 ## CUDA graphs
 
 A frame's GPU work spans many kernels, so launching it eagerly has real CPU overhead. Bytron captures the sequence into a CUDA graph instead, then replays it with a single launch.
+
+Under load this saved about a third of the GPU time in the [benchmarks](benchmarks.md), and the benefit was smaller at low frame rates.
 
 Each slot runs one eager pass first, which lets TensorRT finish auto-tuning its kernels. The graph is captured after that. Graphs depend on the source dimensions, so each slot caches them per resolution with LRU eviction, up to four entries.
 
