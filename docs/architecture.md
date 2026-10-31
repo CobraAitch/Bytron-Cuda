@@ -2,10 +2,6 @@
 
 Bytron is built around one goal: show detections for what is on screen now, not for what was on screen a few frames ago. Most design choices below follow from that.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
-  <img src="assets/architecture-light.svg" alt="Bytron pipeline overview. Frames stay in GPU memory from capture to readback, and only detection results reach the host." width="100%">
-</picture>
 
 ## Threads and data flow
 

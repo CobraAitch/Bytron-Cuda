@@ -11,8 +11,8 @@ Notable changes to this project are recorded here. The format follows [Keep a Ch
 - `BYTRON_BUILD_APP` option and `ci` preset, which build the tests and benchmarks without a GPU or NVIDIA SDK.
 - CI on hosted Windows runners, and Dependabot updates for actions and the vcpkg baseline.
 - README, architecture notes, configuration reference and project policies.
-- GPU benchmark harness, published results and a benchmark report.
-- Project website, troubleshooting guide and architecture diagram.
+- GPU benchmark harness, an ONNX Runtime baseline, published results and a benchmark report.
+- Project website and troubleshooting guide.
 - CodeQL scanning and an automated release workflow.
 
 ### Changed
