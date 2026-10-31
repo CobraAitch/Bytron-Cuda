@@ -89,6 +89,8 @@ def main():
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--iterations", type=int, default=2000)
     parser.add_argument("--cpu-iterations", type=int, default=200)
+    parser.add_argument("--tensorrt-cache", type=pathlib.Path,
+                        help="engine cache folder. Also measures the TensorRT provider")
     args = parser.parse_args()
 
     import onnxruntime as ort
@@ -106,6 +108,21 @@ def main():
         ["nvidia-smi", "--query-gpu=clocks.gr", "--format=csv,noheader,nounits"], text=True).strip())
     print("cuda", results["cuda"], flush=True)
     del gpu
+
+    if args.tensorrt_cache:
+        args.tensorrt_cache.mkdir(parents=True, exist_ok=True)
+        provider = ("TensorrtExecutionProvider", {
+            "trt_fp16_enable": True,
+            "trt_engine_cache_enable": True,
+            "trt_engine_cache_path": str(args.tensorrt_cache),
+        })
+        trt = ort.InferenceSession(str(args.onnx), options, providers=[provider, "CUDAExecutionProvider"])
+        print("active providers:", trt.get_providers(), flush=True)
+        results["tensorrt"] = measure(trt, frames, args.iterations, warmup=100)
+        results["tensorrt"]["clock_mhz"] = int(subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=clocks.gr", "--format=csv,noheader,nounits"], text=True).strip())
+        print("tensorrt", results["tensorrt"], flush=True)
+        del trt
 
     cpu = ort.InferenceSession(str(args.onnx), options, providers=["CPUExecutionProvider"])
     results["cpu"] = measure(cpu, frames, args.cpu_iterations, warmup=10)

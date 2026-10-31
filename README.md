@@ -20,23 +20,25 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/demo.webp" alt="Green detection boxes tracking people and cars at a busy Toronto crosswalk" width="100%">
+  <img src="docs/assets/demo.webp" alt="Screen recording of green detection boxes tracking a crowd at a Toronto crosswalk" width="100%">
 </p>
 
 <p align="center"><sub>
-  Real <code>yolo26m</code> detections, drawn the way the overlay draws them. Rendered offline, because the overlay is excluded from screen capture. Footage: Raysonho, CC0, via Wikimedia Commons.
+  Screen recording of the Bytron overlay running live at 238 fps on an RTX 4070 Ti. The shipped overlay is hidden from screen capture, so this take used a build with that exclusion turned off. Footage: Raysonho, CC0, via Wikimedia Commons.
 </sub></p>
 
 ## Why Bytron
 
 A typical Python loop copies every frame to the CPU, preprocesses it there, and sends it back to the GPU. Bytron skips those round trips. Frames stay in GPU memory, preprocessing runs in one CUDA kernel, and inference is replayed as a captured graph.
 
-| Same model, same GPU | Time per frame | Frames per second |
-| --- | ---: | ---: |
-| **Bytron** | **1.65 ms** | **sustains a 240 Hz display** |
-| ONNX Runtime with CUDA, in a Python loop | 11.87 ms | 84 |
+| Same model, same GPU | Time per frame |
+| --- | ---: |
+| **Bytron** | **1.65 ms** |
+| ONNX Runtime with TensorRT | 6.47 ms |
+| ONNX Runtime with CUDA | 9.99 ms |
+| ONNX Runtime on CPU | 110.76 ms |
 
-That is about 7 times less time per frame, on `yolo26m` at 640x640 on an RTX 4070 Ti. The Python figure leaves out capture entirely, which favors it. The two pipelines also differ in precision: Bytron runs FP16, and the ONNX Runtime run uses the model's FP32 weights.
+That is about 4 times less time per frame than ONNX Runtime's TensorRT provider, and about 6 times less than its CUDA provider, on `yolo26m` at 640x640 on an RTX 4070 Ti. The ONNX Runtime figures leave out capture entirely, which favors them.
 
 See the [benchmark report](docs/benchmarks.md) for the method, raw data and limitations.
 
