@@ -59,7 +59,7 @@ namespace bytron {
             // D3D + CUDA context resources released by ComPtr / explicit unregister.
         }
 
-        // ── Device ────────────────────────────────────────────────────────────
+        // --- Device ---
         void create_device() {
             UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
             D3D_FEATURE_LEVEL feature_level{};
@@ -83,7 +83,7 @@ namespace bytron {
             rt_device_ = inspectable.as<wgd3::IDirect3DDevice>();
         }
 
-        // ── Monitor lookup ────────────────────────────────────────────────────
+        // --- Monitor lookup ---
         // Map monitor_index_ to an HMONITOR + size via DXGI so the index matches
         // the Desktop Duplication backend's output ordering.
         HMONITOR resolve_monitor() {
@@ -107,7 +107,7 @@ namespace bytron {
             return desc.Monitor;
         }
 
-        // ── Capture graph ─────────────────────────────────────────────────────
+        // --- Capture graph ---
         void build_capture() {
             HMONITOR hmon = resolve_monitor();
 
@@ -127,7 +127,7 @@ namespace bytron {
             session_ = frame_pool_.CreateCaptureSession(item_);
 
             // Documented quality options: keep the recording border and the mouse
-            // cursor out of captured pixels. Guarded — older runtimes may lack them.
+            // cursor out of captured pixels. Guarded: older runtimes may lack them.
             try { session_.IsCursorCaptureEnabled(false); }
             catch (...) { spdlog::debug("WGC: IsCursorCaptureEnabled unsupported"); }
             try { session_.IsBorderRequired(false); }
@@ -186,7 +186,7 @@ namespace bytron {
             staging_tex_.Reset();
         }
 
-        // ── Acquire ───────────────────────────────────────────────────────────
+        // --- Acquire ---
         AcquireResult acquire_frame(CudaDeviceBuffer& dst, cudaStream_t stream, unsigned timeout_ms) {
             if (!open_) return AcquireResult::kError;
 

@@ -78,7 +78,7 @@ namespace bytron {
             ex_style |= WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW;
             SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style);
 
-            // Colorkey: RGB(1,0,1) treated as transparent — near-black magenta is
+            // Colorkey: RGB(1,0,1) treated as transparent: near-black magenta is
             // imperceptible and unlikely to appear in real content.
             SetLayeredWindowAttributes(hwnd, RGB(1, 0, 1), 0, LWA_COLORKEY);
             SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
@@ -193,7 +193,7 @@ namespace bytron {
             create_info.ppEnabledLayerNames = &validation_layer;
             spdlog::debug("Vulkan validation layer enabled");
         } else {
-            spdlog::warn("Vulkan validation layer not available — install Vulkan SDK for debug validation");
+            spdlog::warn("Vulkan validation layer not available, install Vulkan SDK for debug validation");
         }
 #endif
 
@@ -453,7 +453,7 @@ namespace bytron {
         } else {
             // External memory interop: Vulkan allocates device-local memory with an
             // exportable Win32 handle, which CUDA imports to get a device pointer.
-            // This enables zero-copy CUDA→Vulkan frame transfer.
+            // This enables zero-copy CUDA-to-Vulkan frame transfer.
             VkExternalMemoryBufferCreateInfo ext_info{};
             ext_info.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
             ext_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
@@ -674,7 +674,7 @@ namespace bytron {
         submit_info.pSignalSemaphores    = &fr.render_finished;
 
         // Fence is reset only here, immediately before the submit that will
-        // re-signal it — earlier failure paths leave it signaled, so the next
+        // re-signal it: earlier failure paths leave it signaled, so the next
         // frame's wait can never deadlock.
         VK_CHECK(vkResetFences(device_, 1, &fr.fence));
         VK_CHECK(vkQueueSubmit(graphics_queue_, 1, &submit_info, fr.fence));

@@ -123,7 +123,7 @@ namespace bytron {
             const int h  = overlay->height();
 
             // Erase previous boxes by redrawing their outlines transparent,
-            // then draw the new set — touches only box outlines instead of
+            // then draw the new set, which touches only box outlines instead of
             // clearing the whole monitor-sized buffer every frame.
             render_boxes_cpu(pixels, w, h, visible, BOX_THICKNESS, CLEAR_COLOR);
             render_boxes_cpu(pixels, w, h, current, BOX_THICKNESS, BOX_COLOR);

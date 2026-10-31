@@ -81,7 +81,7 @@ namespace bytron {
         };
 
         /// 3 slots: one being read by the display, one pending, one free for the
-        /// writer — guarantees a free slot without ever overwriting a live one.
+        /// writer, which guarantees a free slot without ever overwriting a live one.
         static constexpr int MAILBOX_SLOTS = 3;
         FrameMailbox mailbox_[MAILBOX_SLOTS];
 

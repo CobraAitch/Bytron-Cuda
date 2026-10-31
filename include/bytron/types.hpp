@@ -36,7 +36,7 @@ namespace bytron {
 
     static_assert(std::is_trivially_copyable_v<BBox>);
     static_assert(std::is_trivially_copyable_v<Detection>);
-    static_assert(sizeof(Detection) == 24, "Detection layout changed — update GPU code");
+    static_assert(sizeof(Detection) == 24, "Detection layout changed: update GPU code");
 
     /** @brief TensorRT inference precision mode. */
     enum class Precision {
@@ -62,7 +62,7 @@ namespace bytron {
      *
      * Maps semantic fields (bounding box corners, confidence, class ID) to
      * indices within each detection's stride in the raw output tensor. This
-     * decouples the postprocessor from any specific model format — change
+     * decouples the postprocessor from any specific model format: change
      * the schema to support different YOLO variants or custom models without
      * modifying postprocessor code.
      *

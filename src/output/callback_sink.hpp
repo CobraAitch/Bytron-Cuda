@@ -13,7 +13,7 @@ namespace bytron {
     /**
      * @brief Invokes a std::function on each frame's FrameContext.
      *
-     * Discards the device frame data entirely — suitable for headless
+     * Discards the device frame data entirely, suitable for headless
      * operation or when only detection metadata is needed.
      *
      * @note Thread safety: The callback is invoked on the inference thread.

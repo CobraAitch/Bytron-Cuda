@@ -66,12 +66,12 @@ namespace bytron {
                 dims_to_string(out_dims)));
         }
         if (out_dims.d[2] > 6) {
-            spdlog::info("Output stride {} > 6 — extra values per detection will be ignored",
+            spdlog::info("Output stride {} > 6, extra values per detection will be ignored",
                          out_dims.d[2]);
         }
 
         if (num_io > 2) {
-            spdlog::warn("Engine has {} I/O tensors (expected 2) — extra tensors:", num_io);
+            spdlog::warn("Engine has {} I/O tensors (expected 2), extra tensors:", num_io);
             for (int i = 2; i < num_io; ++i) {
                 auto name = engine_->getIOTensorName(i);
                 spdlog::warn("  [{}] '{}' {}", i, name,

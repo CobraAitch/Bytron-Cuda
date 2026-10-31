@@ -45,7 +45,7 @@ namespace bytron {
                 spdlog::info("L2 persistent cache: requested {} MB, hw max {} MB, set {} MB",
                              cfg_.l2_cache_bytes >> 20, max_l2 >> 20, effective_l2 >> 20);
             } else {
-                spdlog::info("GPU does not support L2 persistent cache — disabled");
+                spdlog::info("GPU does not support L2 persistent cache, disabled");
             }
         }
 
@@ -320,7 +320,7 @@ namespace bytron {
         slot.output_buffer.copy_to_host_async(slot.output_pinned.ptr(), output_bytes, stream);
 
         // Warm-up frames include TRT auto-tuning which distorts
-        // per-stage timings — exclude them from profiling metrics.
+        // per-stage timings, so exclude them from profiling metrics.
         slot_eager_exec_[idx] = !(use_cuda_graphs_ && !slot_warmed_up_[idx]);
 
         // Warm-up: run one eager pass before graph capture to let TRT
@@ -365,7 +365,7 @@ namespace bytron {
             auto& slot = slots_[next_slot];
 
             // Finalizing the oldest in-flight slot can block on the GPU, so do
-            // it *before* choosing which capture to process — the mailbox may
+            // it *before* choosing which capture to process: the mailbox may
             // receive newer frames while we wait.
             if (slot_in_flight[slot.index]) {
                 finalize_slot(slot, sink);
@@ -508,7 +508,7 @@ namespace bytron {
         // Input shape and tensor addresses were bound once at construction.
 
         // Relaxed mode: only streams explicitly forked from the capture stream
-        // are included in the graph. This is required for TRT multi-stream —
+        // are included in the graph. This is required for TRT multi-stream:
         // we fork our managed aux streams below so TRT kernels are captured,
         // while any other incidental stream activity doesn't cause failures.
         CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));

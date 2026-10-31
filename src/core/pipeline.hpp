@@ -35,7 +35,7 @@ namespace bytron {
      *    CaptureMailbox (BGRA, GPU-resident, zero CPU copies).
      *  - **Inference thread** cycles through N PipelineSlots, each with its own
      *    high-priority CUDA stream and TRT execution context: copy captured frame
-     *    → fused preprocess → TRT enqueue → D2H output copy → postprocess →
+     *    -> fused preprocess -> TRT enqueue -> D2H output copy -> postprocess ->
      *    deliver to OutputSink.
      *
      * Optionally captures a CUDA graph per slot after a warm-up pass, replaying
@@ -117,7 +117,7 @@ namespace bytron {
         void capture_loop(std::stop_token stoken);
 
         /**
-         * @brief Inference thread: cycles slots through preprocess → TRT → postprocess → deliver.
+         * @brief Inference thread: cycles slots through preprocess -> TRT -> postprocess -> deliver.
          *
          * Waits for the mailbox CV, finalizes the oldest in-flight slot, then
          * consumes the *freshest* capture entry (which may be newer than the one
@@ -163,7 +163,7 @@ namespace bytron {
         std::vector<PipelineSlot> slots_;  ///< N independent inference slots with buffers and streams.
 
         CudaStream     capture_stream_;   ///< Dedicated stream for DXGI acquire + D2D copy.
-        CaptureMailbox capture_mailbox_;  ///< Triple-buffered capture → inference handoff.
+        CaptureMailbox capture_mailbox_;  ///< Triple-buffered capture-to-inference handoff.
 
         std::jthread capture_thread_;    ///< Runs capture_loop().
         std::jthread inference_thread_;  ///< Runs inference_loop().
@@ -200,14 +200,14 @@ namespace bytron {
         }
 
         /**
-         * @brief Capture the preprocess → TRT → D2H sequence as a CUDA graph.
+         * @brief Capture the preprocess -> TRT -> D2H sequence as a CUDA graph.
          *
          * Uses cudaStreamCaptureModeGlobal so TRT internal streams are included.
          * Called once after warm-up, and again on resolution cache miss.
          */
         void capture_graph(PipelineSlot& slot, int src_w, int src_h, int src_pitch, GraphState& gs);
 
-        /// Per-slot map from resolution key → cached graph, with LRU eviction order.
+        /// Per-slot map from resolution key to cached graph, with LRU eviction order.
         struct SlotGraphCache {
             std::unordered_map<std::uint64_t, GraphState> map;
             std::vector<std::uint64_t> lru;  ///< Front = oldest (evict first), back = most recent.

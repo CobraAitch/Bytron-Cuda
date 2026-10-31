@@ -39,7 +39,7 @@ namespace {
 int main() {
     std::printf("Bytron CPU micro-benchmarks\n---------------------------\n");
 
-    // ── Letterbox ─────────────────────────────────────────────────────────
+    // --- Letterbox ---
     {
         // Vary source sizes so the result can't be constant-folded away.
         std::mt19937 rng(1);
@@ -56,7 +56,7 @@ int main() {
         });
     }
 
-    // ── Postprocess ───────────────────────────────────────────────────────
+    // --- Postprocess ---
     {
         constexpr int max_dets = 300, stride = 6;
         Postprocessor pp(0.25f, max_dets, stride);
