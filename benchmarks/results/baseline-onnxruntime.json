@@ -1,0 +1,12 @@
+{
+  "onnxruntime": "1.23.2",
+  "cuda": {
+    "frames": 2000,
+    "mean_ms": 11.87,
+    "median_ms": 10.3,
+    "p99_ms": 19.26,
+    "inference_mean_ms": 8.18,
+    "fps": 84.2,
+    "clock_mhz": 2835
+  }
+}

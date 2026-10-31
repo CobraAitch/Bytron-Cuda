@@ -1,11 +1,19 @@
 # Benchmarks
 
-These results come from one real GPU on a live Windows desktop. The harness, the raw results and the chart generator are all in this repository, so anyone can run them again.
+These results come from one real GPU on a live Windows desktop. The harness, the baseline and the raw results are all in this repository, so anyone can run them again.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-summary-dark.svg">
-  <img src="assets/benchmark-summary-light.svg" alt="Benchmark summary. The figures are in the results table." width="100%">
-</picture>
+## Against a typical Python loop
+
+| Same model, same GPU | Time per frame | Median | 99th percentile |
+| --- | ---: | ---: | ---: |
+| Bytron, graph replay, DXGI, 3 slots | 1.65 ms | not available | not available |
+| ONNX Runtime 1.23.2 with CUDA, in a Python loop | 11.87 ms | 10.3 ms | 19.26 ms |
+
+Bytron takes about 7 times less time per frame. Of the ONNX Runtime time, 8.18 ms is inference, and the rest is preprocessing and postprocessing on the CPU.
+
+The comparison is deliberately generous to the baseline. Its frame is already in host memory, so it pays nothing for capture or readback, which a real desktop loop must do. There are also real differences to keep in mind. Bytron runs FP16, and the ONNX Runtime run uses the model's FP32 weights. Bytron's figure is a mean of GPU time, and the baseline's is wall-clock time in Python. Detection accuracy was not compared.
+
+The baseline is in [baseline_onnxruntime.py](../benchmarks/baseline_onnxruntime.py), and its result is in [benchmarks/results](../benchmarks/results).
 
 ## Key findings
 
@@ -46,16 +54,6 @@ The measured build was a Release build that includes the per-resolution graph ca
 | Eager launch, WGC, 3 slots | 60 fps | 3.74 ms | 3.42 to 3.92 ms | 1280 MHz |
 <!-- results:end -->
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-gpu-time-dark.svg">
-  <img src="assets/benchmark-gpu-time-light.svg" alt="GPU time per frame for each configuration, as listed in the results table." width="100%">
-</picture>
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-throughput-dark.svg">
-  <img src="assets/benchmark-throughput-light.svg" alt="Throughput for each configuration, as listed in the results table." width="100%">
-</picture>
-
 Raw results for every run are in [benchmarks/results](../benchmarks/results).
 
 ## Time per stage
@@ -94,7 +92,7 @@ Measured with `bytron_bench` in a Release build on the same CPU.
 - **Means, not percentiles.** Bytron logs a rounded running average, so frame-level percentiles are not available yet.
 - **Throughput is capture limited.** These runs show what capture delivered, not the most the pipeline can process.
 - **DXGI frame counts.** Cursor-only updates are counted as frames, so a figure above the refresh rate does not mean more new images.
-- **Not measured.** End-to-end latency from screen to overlay, detection accuracy, INT8, other models, other resolutions, and the overlay and Vulkan outputs.
+- **Not measured.** End-to-end latency from screen to overlay, detection accuracy, INT8, other models, other resolutions, the overlay and Vulkan outputs, and ONNX Runtime's TensorRT provider.
 
 ## Reproduce
 
@@ -106,7 +104,11 @@ python benchmarks/gpu_bench.py `
     --onnx yolo26m.onnx `
     --output benchmarks/results/my-gpu.json
 
-python benchmarks/render_charts.py benchmarks/results/my-gpu.json
+python benchmarks/render_report.py benchmarks/results/my-gpu.json
+
+python benchmarks/baseline_onnxruntime.py `
+    --onnx yolo26m.onnx --video clip.webm `
+    --output benchmarks/results/baseline-onnxruntime.json
 ```
 
-The first command takes about eight minutes with the defaults. The second regenerates the charts and the tables on this page.
+The first command takes about eight minutes with the defaults. The second updates the tables on this page. The third measures the ONNX Runtime baseline, and needs `numpy`, `opencv-python` and `onnxruntime-gpu`.

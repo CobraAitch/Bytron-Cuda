@@ -1,67 +1,67 @@
-<p align="center">
-  <img src="docs/assets/banner.png" alt="Bytron: real-time object detection on the Windows desktop" width="100%">
-</p>
+<h1 align="center">Bytron</h1>
 
 <p align="center">
-  <a href="https://cobraaitch.github.io/Bytron-Cuda/"><b>Website</b></a>
-  &nbsp;&middot;&nbsp;
-  <a href="docs/architecture.md"><b>Architecture</b></a>
-  &nbsp;&middot;&nbsp;
-  <a href="docs/benchmarks.md"><b>Benchmarks</b></a>
-  &nbsp;&middot;&nbsp;
-  <a href="docs/configuration.md"><b>Configuration</b></a>
-  &nbsp;&middot;&nbsp;
-  <a href="CHANGELOG.md"><b>Changelog</b></a>
+  <b>Real-time object detection on the Windows desktop.</b><br>
+  YOLO26 through TensorRT, with frames staying on the GPU from capture to inference.
 </p>
 
 <p align="center">
   <a href="https://github.com/CobraAitch/Bytron-Cuda/actions/workflows/ci.yml"><img src="https://github.com/CobraAitch/Bytron-Cuda/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="https://github.com/CobraAitch/Bytron-Cuda/actions/workflows/codeql.yml"><img src="https://github.com/CobraAitch/Bytron-Cuda/actions/workflows/codeql.yml/badge.svg?branch=main" alt="CodeQL status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/CobraAitch/Bytron-Cuda" alt="License"></a>
-  <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white" alt="C++20">
-  <img src="https://img.shields.io/badge/CUDA-13.1-76B900?logo=nvidia&logoColor=white" alt="CUDA 13.1">
-  <img src="https://img.shields.io/badge/TensorRT-10.15-76B900?logo=nvidia&logoColor=white" alt="TensorRT 10.15">
 </p>
 
-Bytron runs a YOLO26 detector on whatever is on your screen and draws the results back on top of it. It captures the desktop, runs each frame through TensorRT on your NVIDIA GPU, and shows the boxes on a transparent, click-through overlay.
+<p align="center">
+  <a href="docs/architecture.md">Architecture</a> &nbsp;&middot;&nbsp;
+  <a href="docs/benchmarks.md">Benchmarks</a> &nbsp;&middot;&nbsp;
+  <a href="docs/configuration.md">Configuration</a> &nbsp;&middot;&nbsp;
+  <a href="docs/troubleshooting.md">Troubleshooting</a> &nbsp;&middot;&nbsp;
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
 
-Frames stay in GPU memory from capture to inference. Only the detection results are copied back to the CPU.
+<p align="center">
+  <img src="docs/assets/demo.webp" alt="Green detection boxes tracking people and cars at a busy Toronto crosswalk" width="100%">
+</p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-summary-dark.svg">
-  <img src="docs/assets/benchmark-summary-light.svg" alt="Benchmark summary. The figures are in docs/benchmarks.md." width="100%">
-</picture>
+<p align="center"><sub>
+  Real <code>yolo26m</code> detections, drawn the way the overlay draws them. Rendered offline, because the overlay is excluded from screen capture. Footage: Raysonho, CC0, via Wikimedia Commons.
+</sub></p>
+
+## Why Bytron
+
+A typical Python loop copies every frame to the CPU, preprocesses it there, and sends it back to the GPU. Bytron skips those round trips. Frames stay in GPU memory, preprocessing runs in one CUDA kernel, and inference is replayed as a captured graph.
+
+| Same model, same GPU | Time per frame | Frames per second |
+| --- | ---: | ---: |
+| **Bytron** | **1.65 ms** | **sustains a 240 Hz display** |
+| ONNX Runtime with CUDA, in a Python loop | 11.87 ms | 84 |
+
+That is about 7 times less time per frame, on `yolo26m` at 640x640 on an RTX 4070 Ti. The Python figure leaves out capture entirely, which favors it. The two pipelines also differ in precision: Bytron runs FP16, and the ONNX Runtime run uses the model's FP32 weights.
+
+See the [benchmark report](docs/benchmarks.md) for the method, raw data and limitations.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A["Screen capture<br/>WGC or DXGI"] --> B["Mailbox<br/>newest frame wins"]
+    subgraph G["GPU: 2 to 4 frames in flight"]
+        C["Preprocess kernel"] --> D["TensorRT inference"]
+    end
+    B --> C
+    D --> E["Postprocess on CPU"]
+    E --> F["Overlay, Vulkan window<br/>or headless"]
+```
+
+A capture thread keeps a three-entry mailbox filled with the latest frames. An inference thread cycles through pipeline slots, and each slot owns the GPU resources for one frame. When the GPU is busy, stale captures are dropped instead of queued, so the boxes follow what is on screen now. The [architecture notes](docs/architecture.md) cover threading, synchronization and graph capture.
 
 ## Features
 
 - **Two capture backends.** Windows.Graphics.Capture by default, with automatic fallback to DXGI Desktop Duplication.
 - **Pipelined inference.** Two to four frames run at once, each on its own CUDA stream and TensorRT context.
-- **Newest frame wins.** When the GPU is busy, stale captures are dropped instead of queued, so the boxes follow what is on screen now.
-- **One preprocessing kernel.** Resize, letterbox, color conversion, normalization and layout change all happen in a single CUDA pass.
-- **CUDA graph replay.** After a warm-up pass, the GPU work for a frame launches as one captured graph.
-- **Three outputs.** A transparent overlay, a full-frame Vulkan window, or headless.
+- **Three outputs.** A transparent click-through overlay, a full-frame Vulkan window, or headless.
 - **FP16 or INT8.** INT8 uses entropy calibration on your own images.
-- **Configurable output layout.** A small schema maps tensor fields to box corners, confidence and class, so other NMS-free models can be used without code changes.
-
-## Architecture
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg">
-  <img src="docs/assets/architecture-light.svg" alt="Bytron pipeline. Frames move from the desktop through a capture backend and a three-entry mailbox into two to four pipeline slots, each running copy, preprocess, TensorRT and readback. Results are postprocessed on the CPU and delivered to an output." width="100%">
-</picture>
-
-A capture thread keeps a three-entry mailbox filled with the latest frames. An inference thread cycles through pipeline slots, and each slot owns the GPU resources for one frame. The [architecture notes](docs/architecture.md) cover threading, synchronization and graph capture in detail.
-
-## Performance
-
-Throughput is limited by capture rather than the GPU. GPU time per frame depends on load, because the GPU runs at lower clocks at lower frame rates.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/benchmark-gpu-time-dark.svg">
-  <img src="docs/assets/benchmark-gpu-time-light.svg" alt="GPU time per frame for each configuration. The values are in docs/benchmarks.md." width="100%">
-</picture>
-
-For displays above 60 Hz, use `--capture dxgi`. The [benchmark report](docs/benchmarks.md) has the method, the raw results and the known limitations, and you can reproduce it with one command.
+- **Configurable output layout.** A small schema maps tensor fields to box corners, confidence and class, so other NMS-free models work without code changes.
 
 ## Requirements
 
@@ -80,7 +80,7 @@ To target another GPU architecture, add it to `BYTRON_CUDA_ARCHS` in [CMakeLists
 
 ## Build
 
-Point the build at vcpkg and at your TensorRT folder, which should contain `include`, `lib` and `bin`. Then use the release preset. vcpkg fetches the remaining dependencies during configure.
+Point the build at vcpkg and at your TensorRT folder, which should contain `include`, `lib` and `bin`. vcpkg fetches the remaining dependencies during configure.
 
 ```powershell
 git clone https://github.com/CobraAitch/Bytron-Cuda.git
@@ -92,8 +92,6 @@ $env:TENSORRT_ROOT = "C:\path\to\TensorRT"
 cmake --preset x64-release
 cmake --build --preset x64-release
 ```
-
-The binary lands in `out\x64-release\Release`, with the TensorRT DLLs copied next to it.
 
 The presets expect CUDA 13.1 in its default install folder. To use another toolkit or Visual Studio version, add your own preset in `CMakeUserPresets.json`, which git ignores.
 
@@ -150,11 +148,9 @@ For a config file, start from [config.example.json](config.example.json). The [c
 - Windows only, and one monitor per process.
 - Capture buffers are sized for 3840 by 2160.
 - Boxes are drawn without class names.
-- Windows.Graphics.Capture delivered 60 fps on a 240 Hz display in testing.
+- Windows.Graphics.Capture delivered 60 fps on a 240 Hz display in testing, so use `--capture dxgi` on high refresh displays.
 - DXGI counts cursor-only updates as frames.
 - End-to-end latency from screen to overlay has not been measured.
-
-See [troubleshooting](docs/troubleshooting.md) for common problems and fixes.
 
 ## Development
 
@@ -166,24 +162,7 @@ cmake --build --preset ci
 ctest --preset ci
 ```
 
-```text
-include/bytron/   Public types
-src/capture/      WGC and DXGI capture backends
-src/core/         Pipeline, slots, mailbox and RAII wrappers for CUDA objects
-src/engine/       TensorRT engine build, cache and INT8 calibration
-src/preprocess/   CUDA preprocessing kernel and letterbox math
-src/postprocess/  Confidence filter and inverse letterbox
-src/output/       Overlay, Vulkan display and callback sinks
-src/util/         Config, logging and timers
-tests/            GoogleTest unit tests
-benchmarks/       CPU micro-benchmarks and the GPU benchmark harness
-docs/             Architecture, configuration, benchmarks and troubleshooting
-site/             Project website
-```
-
-## Contributing
-
-Bug reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow, and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow, and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 ## License
 

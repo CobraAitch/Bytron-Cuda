@@ -6,7 +6,6 @@ on:
     paths:
       - "site/**"
       - "docs/assets/**"
-      - "benchmarks/results/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -39,8 +38,7 @@ jobs:
         run: |
           mkdir -p _site/assets
           cp -r site/. _site/
-          cp docs/assets/*.svg docs/assets/*.png _site/assets/
-          cp benchmarks/results/rtx-4070-ti.json _site/assets/results.json
+          cp docs/assets/demo.webp docs/assets/social-preview.jpg _site/assets/
 
       - name: Configure Pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
