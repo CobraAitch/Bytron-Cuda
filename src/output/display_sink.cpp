@@ -21,7 +21,7 @@ namespace bytron {
         , window_name_(window_name)
         // The pipeline gates slot reuse on the D2D copy this stream performs,
         // so it must not be starved by other GPU work. Overlay draw + present
-        // stay low priority — they never block inference.
+        // stay low priority: they never block inference.
         , copy_stream_(StreamPriority::High)
         , overlay_stream_(StreamPriority::Low)
     {
@@ -105,7 +105,7 @@ namespace bytron {
                 if (pending_idx_ < 0) {
                     // No new frame: poll GLFW events (for close button) without
                     // re-presenting. MAILBOX mode retains the last image on screen.
-                    // present(nullptr) polls events + returns early — no GPU work.
+                    // present(nullptr) polls events + returns early, no GPU work.
                     display->present(nullptr, 0, 0);
                     if (display->should_close()) {
                         window_open_ = false;

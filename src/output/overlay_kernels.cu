@@ -37,7 +37,7 @@ namespace bytron {
 
         int inner_h = max(0, box_h - 2 * t);
 
-        // 4 separate uniform loops — no warp divergence within each loop.
+        // 4 separate uniform loops, no warp divergence within each loop.
         // Top strip: (x1..x2, y1..y1+t-1)
         int top_count = box_w * t;
         for (int i = threadIdx.x; i < top_count; i += blockDim.x)

@@ -1,5 +1,5 @@
 # C++20 and CUDA compiler options for MSVC + NVCC
-# Works with multi-config generators (Visual Studio) — no CMAKE_BUILD_TYPE checks.
+# Works with multi-config generators (Visual Studio), no CMAKE_BUILD_TYPE checks.
 
 if(MSVC)
     add_compile_options(
@@ -8,11 +8,11 @@ if(MSVC)
         $<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>
         $<$<COMPILE_LANGUAGE:CXX>:/utf-8>
         # Target machines all carry RTX-class GPUs, so AVX2 on the host CPU is
-        # a given — lets MSVC vectorize the overlay rendering and postprocess loops.
+        # a given, which lets MSVC vectorize the overlay rendering and postprocess loops.
         $<$<COMPILE_LANGUAGE:CXX>:/arch:AVX2>
     )
 
-    # Release optimizations — use generator expressions for multi-config.
+    # Release optimizations: use generator expressions for multi-config.
     # /fp:fast is safe here: CPU float math is box-coordinate arithmetic with
     # no strict-IEEE requirements (matches --use_fast_math on the CUDA side).
     add_compile_options(

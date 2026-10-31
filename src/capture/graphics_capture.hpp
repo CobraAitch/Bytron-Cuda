@@ -17,7 +17,7 @@ namespace bytron {
      * Compositor-driven, GPU-resident capture: a free-threaded
      * Direct3D11CaptureFramePool delivers frames whose D3D11 textures are copied
      * into a CUDA-registered staging texture, then DMA'd into the destination
-     * device buffer — the same zero-host-copy interop path as the DXGI backend.
+     * device buffer, the same zero-host-copy interop path as the DXGI backend.
      *
      * Compared to Desktop Duplication it is borderless and cursorless by default,
      * handles DPI/HDR/multi-monitor cleanly, and recovers automatically from

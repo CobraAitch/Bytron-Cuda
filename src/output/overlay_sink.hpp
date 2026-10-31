@@ -28,7 +28,7 @@ namespace bytron {
      *
      * Rendering is incremental: previous boxes are erased by redrawing their
      * outlines transparent, and only the union of old + new box regions is
-     * uploaded to the layered window — work stays proportional to box area,
+     * uploaded to the layered window, so work stays proportional to box area,
      * not monitor area.
      *
      * Handoff uses a single latest-wins snapshot: on_frame() replaces the
