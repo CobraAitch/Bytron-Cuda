@@ -1,0 +1,13 @@
+{
+  "onnx_path": "yolo26m.onnx",
+  "engine_cache_dir": "models",
+  "precision": "fp16",
+  "gpu_device": 0,
+  "monitor_index": 0,
+  "capture_backend": "wgc",
+  "confidence_threshold": 0.25,
+  "num_pipeline_slots": 3,
+  "use_cuda_graphs": true,
+  "display": true,
+  "overlay": true
+}
