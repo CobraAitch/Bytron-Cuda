@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bytron: real-time object detection on the Windows desktop</title>
+<meta name="description" content="Bytron captures the Windows desktop, runs YOLO26 through TensorRT and draws the results on a transparent overlay. Frames stay on the GPU from capture to inference.">
+<meta property="og:title" content="Bytron">
+<meta property="og:description" content="Real-time object detection on the Windows desktop with CUDA and TensorRT.">
+<meta property="og:image" content="assets/social-preview.png">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #ffffff;
+    --panel: #f6f8fa;
+    --line: #d1d9e0;
+    --text: #1f2328;
+    --muted: #59636e;
+    --accent: #4f8a00;
+    --accent-ink: #ffffff;
+    --code-bg: #f6f8fa;
+    --measure: 1080px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --panel: #151b23;
+      --line: #30363d;
+      --text: #e6edf3;
+      --muted: #9198a1;
+      --accent: #76b900;
+      --accent-ink: #0b0f14;
+      --code-bg: #151b23;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 400 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  a { color: inherit; }
+  .wrap { max-width: var(--measure); margin: 0 auto; padding: 0 24px; }
+
+  header { border-bottom: 1px solid var(--line); }
+  .nav { display: flex; align-items: center; gap: 28px; height: 68px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 18px; text-decoration: none; margin-right: auto; }
+  .brand img { width: 30px; height: 30px; display: block; }
+  .nav a:not(.brand) { color: var(--muted); text-decoration: none; font-size: 15px; }
+  .nav a:not(.brand):hover { color: var(--text); }
+
+  .hero { padding-top: 96px; padding-bottom: 72px; }
+  h1 { font-size: clamp(38px, 6vw, 62px); line-height: 1.08; letter-spacing: -0.03em; font-weight: 650; margin: 0 0 22px; max-width: 16ch; }
+  .lede { font-size: clamp(18px, 2.2vw, 21px); color: var(--muted); max-width: 58ch; margin: 0 0 34px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; }
+  .button { display: inline-block; padding: 11px 20px; border-radius: 8px; font-weight: 600; font-size: 15px; text-decoration: none; border: 1px solid var(--line); }
+  .button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+  section { padding: 64px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: clamp(26px, 3.4vw, 34px); letter-spacing: -0.02em; font-weight: 650; margin: 0 0 12px; }
+  .intro { color: var(--muted); max-width: 66ch; margin: 0 0 34px; }
+  figure { margin: 0 -3.3% 28px; }
+  figure img, figure svg { display: block; width: 100%; height: auto; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 28px 36px; }
+  .grid h3 { font-size: 17px; font-weight: 600; margin: 0 0 6px; }
+  .grid p { margin: 0; color: var(--muted); font-size: 16px; }
+
+  pre { margin: 0; padding: 18px 20px; overflow-x: auto; background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; font: 14px/1.6 ui-monospace, "Cascadia Mono", Consolas, monospace; }
+
+  details { margin-top: 8px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 15px; }
+  .table-scroll { overflow-x: auto; margin-top: 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th, td { text-align: left; padding: 9px 14px 9px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+  footer { border-top: 1px solid var(--line); padding: 36px 0 56px; color: var(--muted); font-size: 14px; }
+  footer p { margin: 0 0 8px; max-width: 78ch; }
+
+  @media (max-width: 640px) {
+    .nav { gap: 16px; }
+    .nav .optional { display: none; }
+    .hero { padding-top: 64px; padding-bottom: 48px; }
+    section { padding: 48px 0; }
+    figure { margin: 0 0 24px; overflow-x: auto; }
+    figure img, figure svg { width: 680px; max-width: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#top"><img src="assets/logo.svg" alt=""><span>Bytron</span></a>
+    <a class="optional" href="#architecture">Architecture</a>
+    <a class="optional" href="#benchmarks">Benchmarks</a>
+    <a href="https://github.com/CobraAitch/Bytron-Cuda#readme">Docs</a>
+    <a href="https://github.com/CobraAitch/Bytron-Cuda">GitHub</a>
+  </div>
+</header>
+
+<main id="top">
+  <div class="wrap hero">
+    <h1>Real-time object detection on the Windows desktop.</h1>
+    <p class="lede">Bytron captures the screen, runs YOLO26 through TensorRT on your NVIDIA GPU, and draws the results on a transparent overlay. Frames stay in GPU memory from capture to inference.</p>
+    <div class="actions">
+      <a class="button primary" href="https://github.com/CobraAitch/Bytron-Cuda#build">Get started</a>
+      <a class="button" href="https://github.com/CobraAitch/Bytron-Cuda">View on GitHub</a>
+    </div>
+  </div>
+
+  <section id="performance">
+    <div class="wrap">
+      <figure>
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-summary-dark.svg">
+          <img src="assets/benchmark-summary-light.svg" alt="Benchmark summary figures. The full table is in the benchmarks section.">
+        </picture>
+      </figure>
+    </div>
+  </section>
+
+  <section id="architecture">
+    <div class="wrap">
+      <h2>Built around the newest frame</h2>
+      <p class="intro">A queue would keep every frame and every bit of delay. Bytron keeps a small mailbox instead, always takes the newest capture, and runs several frames through the GPU at once.</p>
+      <figure>
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
+          <img src="assets/architecture-light.svg" alt="Bytron pipeline. Frames move from the desktop through a capture backend and a mailbox into pipeline slots, then results go to the CPU and an output.">
+        </picture>
+      </figure>
+      <div class="grid">
+        <div><h3>GPU-resident frames</h3><p>Captures go straight from a D3D11 texture into CUDA device memory. Only detection results return to the host.</p></div>
+        <div><h3>Pipelined inference</h3><p>Two to four frames run at once, each with its own CUDA stream and TensorRT execution context.</p></div>
+        <div><h3>One preprocessing pass</h3><p>Resize, letterbox, color conversion, normalization and layout change run in a single CUDA kernel.</p></div>
+        <div><h3>CUDA graph replay</h3><p>After a warm-up pass, the GPU work for a frame launches as one captured graph.</p></div>
+        <div><h3>Two capture backends</h3><p>Windows.Graphics.Capture by default, with DXGI Desktop Duplication as a fallback and a high refresh option.</p></div>
+        <div><h3>Three outputs</h3><p>A click-through overlay excluded from capture, a full-frame Vulkan window, or headless.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="benchmarks">
+    <div class="wrap">
+      <h2>Benchmarks</h2>
+      <p class="intro">Measured on real hardware, with the harness and raw results in the repository. Read the <a href="https://github.com/CobraAitch/Bytron-Cuda/blob/main/docs/benchmarks.md">method and limitations</a>.</p>
+      <figure data-chart="benchmark-gpu-time">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-gpu-time-dark.svg">
+          <img src="assets/benchmark-gpu-time-light.svg" alt="GPU time per frame for each configuration. Values are in the table below.">
+        </picture>
+      </figure>
+      <figure data-chart="benchmark-throughput">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-throughput-dark.svg">
+          <img src="assets/benchmark-throughput-light.svg" alt="Throughput for each configuration. Values are in the table below.">
+        </picture>
+      </figure>
+      <details>
+        <summary>View as a table</summary>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>Configuration</th><th class="num">Throughput</th><th class="num">GPU time</th><th class="num">Range</th><th class="num">GPU clock</th></tr>
+            </thead>
+            <tbody id="results"><tr><td colspan="5">Results are in the repository under benchmarks/results.</td></tr></tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <section id="start">
+    <div class="wrap">
+      <h2>Get started</h2>
+      <p class="intro">Requires Windows 11, an NVIDIA GPU, Visual Studio 2026, the CUDA Toolkit, TensorRT, the Vulkan SDK and vcpkg.</p>
+<pre><code>git clone https://github.com/CobraAitch/Bytron-Cuda.git
+cd Bytron-Cuda
+
+cmake --preset x64-release
+cmake --build --preset x64-release
+
+.\out\x64-release\Release\bytron.exe --onnx yolo26m.onnx</code></pre>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Bytron is open source under the MIT License.</p>
+    <p>NVIDIA, CUDA and TensorRT are trademarks of NVIDIA Corporation. Bytron is an independent project and is not affiliated with NVIDIA or Ultralytics.</p>
+  </div>
+</footer>
+
+<script>
+  // Progressive enhancement. Without JavaScript the pictures and links above
+  // still work. With it, charts are inlined so each bar gets a hover tooltip.
+  const dark = matchMedia("(prefers-color-scheme: dark)");
+
+  async function inlineCharts() {
+    for (const figure of document.querySelectorAll("[data-chart]")) {
+      const theme = dark.matches ? "dark" : "light";
+      const response = await fetch(`assets/${figure.dataset.chart}-${theme}.svg`).catch(() => null);
+      if (response && response.ok) figure.innerHTML = await response.text();
+    }
+  }
+
+  async function fillTable() {
+    const response = await fetch("assets/results.json").catch(() => null);
+    if (!response || !response.ok) return;
+    const { configs } = await response.json();
+    const rows = configs.map((c) => {
+      const launch = c.graphs ? "Graph replay" : "Eager launch";
+      const name = `${launch}, ${c.capture.toUpperCase()}, ${c.slots} slots`;
+      const range = `${c.gpu_ms_min.toFixed(2)} to ${c.gpu_ms_max.toFixed(2)} ms`;
+      const clock = c.clock_mhz ? `${Math.round(c.clock_mhz)} MHz` : "";
+      return `<tr><td>${name}</td><td class="num">${c.fps.toFixed(0)} fps</td>` +
+             `<td class="num">${c.gpu_ms.toFixed(2)} ms</td><td class="num">${range}</td>` +
+             `<td class="num">${clock}</td></tr>`;
+    });
+    document.getElementById("results").innerHTML = rows.join("");
+  }
+
+  dark.addEventListener("change", inlineCharts);
+  inlineCharts();
+  fillTable();
+</script>
+</body>
+</html>
