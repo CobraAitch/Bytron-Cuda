@@ -163,7 +163,7 @@ namespace bytron {
         std::vector<PipelineSlot> slots_;  ///< N independent inference slots with buffers and streams.
 
         CudaStream     capture_stream_;   ///< Dedicated stream for DXGI acquire + D2D copy.
-        CaptureMailbox capture_mailbox_;  ///< Triple-buffered capture-to-inference handoff.
+        CaptureMailbox capture_mailbox_;  ///< Triple-buffered capture → inference handoff.
 
         std::jthread capture_thread_;    ///< Runs capture_loop().
         std::jthread inference_thread_;  ///< Runs inference_loop().
@@ -207,7 +207,7 @@ namespace bytron {
          */
         void capture_graph(PipelineSlot& slot, int src_w, int src_h, int src_pitch, GraphState& gs);
 
-        /// Per-slot map from resolution key to cached graph, with LRU eviction order.
+        /// Per-slot map from resolution key → cached graph, with LRU eviction order.
         struct SlotGraphCache {
             std::unordered_map<std::uint64_t, GraphState> map;
             std::vector<std::uint64_t> lru;  ///< Front = oldest (evict first), back = most recent.
