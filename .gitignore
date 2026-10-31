@@ -6,9 +6,11 @@ out/
 .vs/
 *.user
 CMakeSettings.json
+CMakeUserPresets.json
 
 # Runtime data
 *.engine
+*.timing
 *.onnx
 *.cache
 
@@ -20,6 +22,3 @@ vcpkg_installed/
 
 # Windows artifacts
 nul
-
-# Claude Code local settings
-.claude/
