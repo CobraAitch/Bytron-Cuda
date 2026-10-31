@@ -4,7 +4,7 @@
  */
 
 #include <gtest/gtest.h>
-#include "preprocess/preprocess_kernels.cuh"
+#include "preprocess/letterbox.hpp"
 
 using bytron::compute_letterbox;
 

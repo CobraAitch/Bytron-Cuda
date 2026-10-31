@@ -7,7 +7,7 @@
  * (std::chrono only) so it builds and runs without a GPU.
  */
 
-#include "preprocess/preprocess_kernels.cuh"
+#include "preprocess/letterbox.hpp"
 #include "postprocess/postprocessor.hpp"
 #include "core/frame_context.hpp"
 
