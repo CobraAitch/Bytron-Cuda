@@ -1,0 +1,7 @@
+# Keep every text file LF in the repository and in working trees.
+* text=auto eol=lf
+
+*.png binary
+
+# Third-party single-header library. Keep it out of the language stats.
+include/stb/** linguist-vendored
