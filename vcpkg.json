@@ -2,6 +2,8 @@
   "name": "bytron",
   "version": "0.1.0",
   "description": "Pipelined CUDA + TensorRT YOLO26 inference engine",
+  "homepage": "https://github.com/CobraAitch/Bytron-Cuda",
+  "license": "MIT",
   "dependencies": [
     "spdlog",
     "nlohmann-json",
