@@ -1,12 +1,29 @@
 {
   "onnxruntime": "1.23.2",
+  "tensorrt": {
+    "frames": 2000,
+    "mean_ms": 6.47,
+    "median_ms": 6.41,
+    "p99_ms": 7.41,
+    "inference_mean_ms": 3.62,
+    "fps": 154.7,
+    "clock_mhz": 2745
+  },
   "cuda": {
     "frames": 2000,
-    "mean_ms": 11.87,
-    "median_ms": 10.3,
-    "p99_ms": 19.26,
-    "inference_mean_ms": 8.18,
-    "fps": 84.2,
-    "clock_mhz": 2835
+    "mean_ms": 9.99,
+    "median_ms": 9.95,
+    "p99_ms": 10.87,
+    "inference_mean_ms": 7.12,
+    "fps": 100.1,
+    "clock_mhz": 2820
+  },
+  "cpu": {
+    "frames": 200,
+    "mean_ms": 110.76,
+    "median_ms": 109.85,
+    "p99_ms": 125.26,
+    "inference_mean_ms": 107.09,
+    "fps": 9.0
   }
 }

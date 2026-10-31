@@ -52,8 +52,8 @@
   <p class="lede">Bytron runs YOLO26 through TensorRT, with frames staying on the GPU from capture to inference.</p>
 
   <figure>
-    <img src="assets/demo.webp" alt="Green detection boxes tracking people and cars at a busy Toronto crosswalk" width="960" height="540">
-    <figcaption>Real yolo26m detections, drawn the way the overlay draws them. Rendered offline, because the overlay is excluded from screen capture. Footage: Raysonho, CC0, via Wikimedia Commons.</figcaption>
+    <img src="assets/demo.webp" alt="Screen recording of green detection boxes tracking a crowd at a Toronto crosswalk" width="1280" height="720">
+    <figcaption>Screen recording of the Bytron overlay running live at 238 fps on an RTX 4070 Ti. The shipped overlay is hidden from screen capture, so this take used a build with that exclusion turned off. Footage: Raysonho, CC0, via Wikimedia Commons.</figcaption>
   </figure>
 
   <section>
@@ -64,7 +64,9 @@
         <thead><tr><th>Same model, same GPU</th><th class="num">Time per frame</th></tr></thead>
         <tbody>
           <tr><td><strong>Bytron</strong></td><td class="num"><strong>1.65 ms</strong></td></tr>
-          <tr><td>ONNX Runtime with CUDA, in a Python loop</td><td class="num">11.87 ms</td></tr>
+          <tr><td>ONNX Runtime with TensorRT</td><td class="num">6.47 ms</td></tr>
+          <tr><td>ONNX Runtime with CUDA</td><td class="num">9.99 ms</td></tr>
+          <tr><td>ONNX Runtime on CPU</td><td class="num">110.76 ms</td></tr>
         </tbody>
       </table>
     </div>
